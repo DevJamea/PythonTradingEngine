@@ -125,14 +125,13 @@ credentials (if used at all) come from the environment and are never logged.
 
 ## 9. Symbol discovery
 
-The bot does **not** assume the symbol is `XAUUSD`. `find_gold_symbol()`:
+The bot is a Gold trading engine and strictly enforces Gold/XAU instrument validation:
 
-1. tries your configured `SYMBOL` (if any),
-2. then the `GOLD_SYMBOL_CANDIDATES` list in order,
-3. then a deterministic scan of all broker symbols containing `XAU`/`GOLD`.
+1. If `SYMBOL` is explicitly configured, it is validated using a robust Gold naming rule (accepting variations like `XAUUSD`, `XAUUSDm`, `XAUUSD.a`, `GOLD`, `GOLDm`, `XAUUSD#`). Non-gold symbols such as `EURUSD` or `GBPUSD` are immediately rejected with an error, safely preventing non-gold execution.
+2. If `SYMBOL` is omitted, `find_gold_symbol()` scans `GOLD_SYMBOL_CANDIDATES` and broker symbols, filtering only recognized Gold/XAU symbols.
 
 A candidate is only accepted when it is **visible** and in **FULL trade
-mode** with sane volume constraints. The selected symbol and its properties
+mode** (official MT5 constant 4) with sane volume constraints. The selected symbol and its properties
 (point, digits, volume min/max/step, stops level, freeze level, contract
 size, tick value/size) are printed and logged:
 
@@ -198,25 +197,39 @@ The main loop sleeps between cycles (default 45 s) and evaluates a new entry
 signal **only when a new closed candle appears** — no busy loop, no
 re-triggering on the same candle.
 
-## 13. Risk management
+## 13. Risk management & Execution hardening
 
 - **Sizing**: volume = (equity × risk%) / (stop distance × loss per lot),
   using the broker's exact tick value/size (contract size fallback),
   rounded **down** to the volume step, clamped to min/max. If no safe size
   exists → **NO TRADE** (never a magic fixed lot).
-- **Risk gate** (`risk/risk_manager.py`, independent of the strategy) blocks
-  real orders when: trading disabled, dry run, no connection, invalid symbol,
-  market closed, server trading off, spread too wide, position/pending
-  limits reached, daily loss limit hit, outside trading hours, sizing
-  failed, SL/TP invalid or closer than the broker `stops_level`, or a
-  duplicate entry (same-direction position / same-side order at the same
-  price).
-- **Break-even**: at +1R the SL moves to entry ± buffer — idempotent, and
-  state survives restarts (encoded in the position comment).
-- **Partial close**: R-multiple levels from config (50% / 30% / remainder);
-  broker `volume_min`/`volume_step` are enforced — invalid orders are logged
-  and skipped, never sent.
-- **Trailing stop**: ATR-based, disabled by default.
+- **Volume precision handling**: initial position volume in comments is serialized
+  with dynamic precision matching the broker's `volume_step` (e.g. 3 decimal places
+  for 0.001 step), preventing precision loss during partial closes or bot restart/recovery.
+- **MT5 Permission Checks**: the risk gate independently verifies three MT5 permissions:
+  terminal automated trading (`TERMINAL_TRADE_ALLOWED`), account trading
+  (`ACCOUNT_TRADE_ALLOWED`), and expert advisor trading (`ACCOUNT_TRADE_EXPERT`).
+  Trading is blocked if any permission is disabled.
+- **Preflight `order_check` Flow**: all live requests (market entries, pending orders,
+  SL/TP modifications, full and partial closes) pass through `order_check()` before
+  calling `order_send()`. If `order_check()` rejects or raises an error, `order_send()`
+  is never called.
+- **SL Stops & Freeze Level Validation**: Stop Loss modifications (break-even and trailing)
+  are pre-validated against current market prices (BUY evaluated relative to Bid, SELL relative
+  to Ask), broker `trade_stops_level`, and `trade_freeze_level`. Invalid modifications are
+  rejected before submission.
+- **Break-even & Trailing Precedence**: break-even and trailing SL proposals within a cycle
+  are reconciled to select the single most protective valid SL (for BUY: highest SL; for SELL:
+  lowest SL). Protection is never rolled back (for BUY: new SL >= current SL; for SELL:
+  new SL <= current SL), and a weaker trailing proposal can never overwrite break-even.
+- **Market Open Validation**: market availability is verified using usable Bid and Ask quotes
+  (`bid > 0 and ask > 0 and ask >= bid`), without requiring `tick.last > 0` which can
+  legitimately be zero for Forex/CFD instruments.
+- **Pending Orders API vs Strategy Status**: low-level execution API fully supports
+  `BUY_LIMIT`, `BUY_STOP`, `SELL_LIMIT`, and `SELL_STOP` with distance and preflight validation.
+  Strategy-level pending order generation remains **intentionally unimplemented** because the
+  underlying strategy produces only closed-candle market BUY/SELL signals; pending orders are
+  not arbitrarily invented without explicit strategy specifications.
 - **Duplicate protection**: new entries only on a new closed candle, plus
   position/pending checks, all filtered by the magic number.
 - **Account mode**: NETTING vs HEDGING is detected and logged; set

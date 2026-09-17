@@ -10,6 +10,7 @@ trading properties) is printed and logged.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional, Sequence
 
 from ..models import SymbolSpec
@@ -17,6 +18,24 @@ from ._constants import const
 from .connection import MT5DataError, MT5Error, require_mt5
 
 logger = logging.getLogger("gold_trader.mt5.symbols")
+
+_GOLD_PATTERN = re.compile(
+    r"^(?:[A-Za-z0-9]{1,4}[._#+-])?"
+    r"(?:"
+    r"XAU(?:USD|EUR|GBP|AUD|CHF|JPY|CAD|NZD|CNH|HKD|SGD)?"
+    r"|"
+    r"GOLD(?:USD)?"
+    r")"
+    r"(?:[._#+!-][A-Za-z0-9]{0,6}|[a-zA-Z]|micro|mini|pro|ecn|raw|std|cent)?$",
+    re.IGNORECASE,
+)
+
+
+def is_gold_symbol(name: str) -> bool:
+    """Return True if the symbol name represents Gold / XAU."""
+    if not name or not isinstance(name, str):
+        return False
+    return bool(_GOLD_PATTERN.match(name.strip()))
 
 
 class GoldSymbolNotFoundError(MT5Error):
@@ -36,6 +55,16 @@ def find_gold_symbol(
     candidates: Sequence[str] = (),
 ) -> SymbolSpec:
     """Find the broker's tradable gold symbol and return its spec."""
+    if preferred:
+        if not is_gold_symbol(preferred):
+            logger.error(
+                "configured symbol %r is not a Gold/XAU instrument; rejecting",
+                preferred,
+            )
+            raise ValueError(
+                f"Configured symbol {preferred!r} is not a Gold/XAU instrument"
+            )
+
     mt5_api = require_mt5()
     all_symbols = mt5_api.symbols_get()
     if all_symbols is None:
@@ -46,13 +75,13 @@ def find_gold_symbol(
     by_name: Dict[str, Any] = {s.name: s for s in all_symbols}
 
     scanned = sorted(
-        name for name in by_name if "XAU" in name.upper() or "GOLD" in name.upper()
+        name for name in by_name if is_gold_symbol(name)
     )
     ordered: List[str] = []
     if preferred:
         ordered.append(preferred)
     for name in list(candidates) + scanned:
-        if name not in ordered:
+        if is_gold_symbol(name) and name not in ordered:
             ordered.append(name)
 
     for name in ordered:

@@ -17,15 +17,37 @@ from typing import Dict, List, Optional, Sequence
 
 from ..config import Config
 from ..models import ManagementAction, PositionInfo, SymbolSpec
+from ..utils.validators import round_price, validate_sl_modification
 
 _COMMENT_RE = re.compile(r"sl=(?P<sl>\d+(?:\.\d+)?)\|vol=(?P<vol>\d+(?:\.\d+)?)")
 
 
+def volume_precision(
+    volume_step: Optional[float] = None, volume: Optional[float] = None
+) -> int:
+    """Determine decimal places required to represent volume without loss of precision."""
+    prec = 2
+    if volume_step is not None and volume_step > 0:
+        step_str = f"{volume_step:.8f}".rstrip("0")
+        if "." in step_str:
+            prec = max(prec, len(step_str.split(".")[1]))
+    if volume is not None and volume > 0:
+        vol_str = f"{volume:.8f}".rstrip("0")
+        if "." in vol_str:
+            prec = max(prec, len(vol_str.split(".")[1]))
+    return prec
+
+
 def format_position_comment(
-    prefix: str, initial_sl: float, initial_volume: float, digits: int
+    prefix: str,
+    initial_sl: float,
+    initial_volume: float,
+    digits: int,
+    volume_step: Optional[float] = None,
 ) -> str:
-    """Build the bot comment that stores the initial SL and volume."""
-    return f"{prefix}|sl={initial_sl:.{digits}f}|vol={initial_volume:.2f}"
+    """Build the bot comment that stores the initial SL and volume preserving precision."""
+    vol_digits = volume_precision(volume_step, initial_volume)
+    return f"{prefix}|sl={initial_sl:.{digits}f}|vol={initial_volume:.{vol_digits}f}"
 
 
 def parse_position_comment(comment: str) -> Optional[Dict[str, float]]:
@@ -81,7 +103,7 @@ def manage_break_even(
             if price > position.price_open - cfg.break_even_r * r_distance:
                 continue
 
-        new_sl = breakeven_target(position, cfg.break_even_buffer)
+        new_sl = round_price(breakeven_target(position, cfg.break_even_buffer), spec.digits)
         if position.sl <= 0:
             improved = True  # no current SL -> any valid SL is an improvement
         elif position.is_buy:
@@ -90,6 +112,11 @@ def manage_break_even(
             improved = new_sl < position.sl - min_improvement
         if not improved:
             continue  # already at/past break-even -> idempotent skip
+
+        # Validate against broker stops, freeze level and market price
+        problems = validate_sl_modification(position, new_sl, bid, ask, spec)
+        if problems:
+            continue
 
         actions.append(
             ManagementAction(

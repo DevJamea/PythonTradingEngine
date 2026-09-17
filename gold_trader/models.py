@@ -211,6 +211,9 @@ class MarketState:
     account_balance: float
     account_equity: float
     now: datetime
+    terminal_trade_allowed: bool = True
+    account_trade_allowed: bool = True
+    expert_trade_allowed: bool = True
 
 
 @dataclass

@@ -69,8 +69,12 @@ def check_trade(
         failures.append("symbol invalid or not tradable")
     if not state.market_open:
         failures.append("market closed / no tick available")
-    if not state.server_trading_allowed:
+    if not state.terminal_trade_allowed or not state.server_trading_allowed:
         failures.append("terminal trading disabled")
+    if not state.account_trade_allowed:
+        failures.append("account trading disabled")
+    if not state.expert_trade_allowed:
+        failures.append("expert trading disabled")
     if state.spread > cfg.max_spread:
         failures.append(
             f"spread {state.spread:.5f} exceeds max {cfg.max_spread}"

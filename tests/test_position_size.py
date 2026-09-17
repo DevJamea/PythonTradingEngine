@@ -116,3 +116,14 @@ def test_profit_for_volume():
 def test_profit_for_volume_rejects_negative_distance():
     with pytest.raises(ValueError):
         profit_for_volume(-1.0, 0.1, SPEC)
+
+
+def test_volume_step_three_decimals():
+    spec = make_spec(volume_min=0.001, volume_step=0.001)
+    assert round_volume_to_step(0.1239, 0.001) == pytest.approx(0.123)
+    assert round_volume_to_step(0.001, 0.001) == pytest.approx(0.001)
+    assert round_volume_to_step(1.2378, 0.001) == pytest.approx(1.237)
+
+    result = calculate_position_size(10_000, 0.005, 2000.0, 1995.0, spec)
+    assert result.volume is not None
+    assert round(result.volume, 3) == result.volume

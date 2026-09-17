@@ -123,3 +123,18 @@ def test_manual_position_never_touched():
     )
     actions = manage_partial_close([position], bid=2016.0, ask=2016.1, cfg=CFG, spec=SPEC)
     assert actions == []
+
+
+def test_partial_close_with_step_0_001():
+    # 0.123 volume with step 0.001
+    spec = make_spec(volume_min=0.001, volume_step=0.001)
+    position = PositionInfo(
+        ticket=1, symbol="XAUUSD", is_buy=True, volume=0.123,
+        price_open=2000.0, sl=0.0, tp=0.0, profit=0.0, magic=MAGIC,
+        comment=format_position_comment("GB", 1995.0, 0.123, 2, volume_step=0.001),
+    )
+    # At +1R, close 50% of 0.123 = 0.0615 -> rounded to step 0.001 = 0.061
+    actions = manage_partial_close([position], bid=2005.5, ask=2005.6, cfg=CFG, spec=spec)
+    assert len(actions) == 1
+    assert actions[0].close_volume == pytest.approx(0.061)
+

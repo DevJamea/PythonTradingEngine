@@ -7,7 +7,7 @@ through a position-close deal / SLTP modification).
 """
 from __future__ import annotations
 
-from typing import List, Optional, Sequence
+from typing import Any, List, Optional, Sequence
 
 import pandas as pd
 
@@ -57,6 +57,7 @@ def close_position(
     magic: int = 0,
     deviation: int = 20,
     comment: str = "",
+    tick: Optional[Any] = None,
 ) -> OrderResult:
     """Close all (or part of) a position via a market close deal.
 
@@ -76,25 +77,96 @@ def close_position(
         "type": _order_type_value(close_type),
         "position": int(position.ticket),
         "magic": int(magic),
+        "deviation": int(deviation),
         "comment": comment,
         "type_time": const("ORDER_TIME_GTC", 0),
         "type_filling": choose_filling_mode(spec),
     }
+
+    if tick is None:
+        try:
+            from .market_data import get_tick
+            tick = get_tick(position.symbol)
+        except Exception:
+            tick = None
+
+    if tick is not None:
+        try:
+            bid = float(getattr(tick, "bid", 0.0) or 0.0)
+            ask = float(getattr(tick, "ask", 0.0) or 0.0)
+            if position.is_buy and bid > 0:
+                request["price"] = round(bid, spec.digits)
+            elif not position.is_buy and ask > 0:
+                request["price"] = round(ask, spec.digits)
+        except (TypeError, ValueError):
+            pass
+
     return send_request(request)
 
 
 def modify_position_sltp(
-    position: PositionInfo, sl: float, tp: float, spec: SymbolSpec
+    position: PositionInfo,
+    sl: float,
+    tp: float,
+    spec: SymbolSpec,
+    tick: Optional[Any] = None,
 ) -> OrderResult:
     """Move the SL/TP of an open position (e.g. break-even, trailing)."""
+    from ..utils.validators import round_price, validate_sl_modification
+
+    sl_rounded = round_price(sl, spec.digits)
+    tp_rounded = round_price(tp, spec.digits) if tp > 0 else 0.0
+
     request = {
         # TRADE_ACTION_SLTP = 6 (official)
         "action": const("TRADE_ACTION_SLTP", 6),
         "position": int(position.ticket),
         "symbol": position.symbol,
-        "sl": round(float(sl), spec.digits),
-        "tp": round(float(tp), spec.digits),
+        "sl": sl_rounded,
+        "tp": tp_rounded,
     }
+
+    # Protection invariant: never reduce protection
+    if position.is_buy and position.sl > 0 and sl_rounded < position.sl - 1e-9:
+        return OrderResult(
+            success=False,
+            retcode=const("TRADE_RETCODE_INVALID_STOPS", 10016),
+            comment=f"invalid SL modification: new SL {sl_rounded} reduces protection below current {position.sl}",
+            order=0,
+            request=request,
+        )
+    if not position.is_buy and position.sl > 0 and sl_rounded > position.sl + 1e-9:
+        return OrderResult(
+            success=False,
+            retcode=const("TRADE_RETCODE_INVALID_STOPS", 10016),
+            comment=f"invalid SL modification: new SL {sl_rounded} reduces protection below current {position.sl}",
+            order=0,
+            request=request,
+        )
+
+    if tick is None:
+        try:
+            from .market_data import get_tick
+            tick = get_tick(position.symbol)
+        except Exception:
+            tick = None
+
+    if tick is not None:
+        try:
+            bid = float(getattr(tick, "bid", 0.0) or 0.0)
+            ask = float(getattr(tick, "ask", 0.0) or 0.0)
+            problems = validate_sl_modification(position, sl_rounded, bid, ask, spec)
+            if problems:
+                return OrderResult(
+                    success=False,
+                    retcode=const("TRADE_RETCODE_INVALID_STOPS", 10016),
+                    comment=f"invalid SL modification: {problems[0]}",
+                    order=0,
+                    request=request,
+                )
+        except (TypeError, ValueError):
+            pass
+
     return send_request(request)
 
 

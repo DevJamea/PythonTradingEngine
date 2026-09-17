@@ -12,7 +12,7 @@ from typing import List, Optional, Sequence
 
 from ..config import Config
 from ..models import ManagementAction, PositionInfo, SymbolSpec
-from ..utils.validators import round_price
+from ..utils.validators import round_price, validate_sl_modification
 
 
 def compute_trailing_sl(
@@ -57,6 +57,9 @@ def manage_trailing_stop(
         price = bid if position.is_buy else ask
         candidate = compute_trailing_sl(position, price, atr_value, cfg, spec)
         if candidate is None:
+            continue
+        problems = validate_sl_modification(position, candidate, bid, ask, spec)
+        if problems:
             continue
         actions.append(
             ManagementAction(

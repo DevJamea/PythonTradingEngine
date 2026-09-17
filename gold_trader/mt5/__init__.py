@@ -16,7 +16,7 @@ from .connection import (
     MT5Error,
     require_mt5,
 )
-from .market_data import TickData, drop_unclosed_candle, get_candles, get_tick
+from .market_data import TickData, drop_unclosed_candle, get_candles, get_tick, is_tick_usable
 from .orders import (
     delete_order,
     get_pending_orders,
@@ -35,7 +35,7 @@ from .positions import (
     modify_position_sltp,
     total_profit,
 )
-from .symbols import GoldSymbolNotFoundError, find_gold_symbol
+from .symbols import GoldSymbolNotFoundError, find_gold_symbol, is_gold_symbol
 
 __all__ = [
     "MT5_AVAILABLE",
@@ -48,6 +48,7 @@ __all__ = [
     "drop_unclosed_candle",
     "get_candles",
     "get_tick",
+    "is_tick_usable",
     "delete_order",
     "get_pending_orders",
     "place_buy_limit",
@@ -64,4 +65,5 @@ __all__ = [
     "total_profit",
     "GoldSymbolNotFoundError",
     "find_gold_symbol",
+    "is_gold_symbol",
 ]
