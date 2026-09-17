@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import pytest
 
-from gold_trader.models import PositionInfo
+from gold_trader.models import ManagementAction, PositionInfo
 from gold_trader.trade_management.break_even import (
     breakeven_target,
     format_position_comment,
     manage_break_even,
     parse_position_comment,
 )
+from gold_trader.trade_management.reconciliation import resolve_management_actions
 from tests._helpers import make_cfg
 
 MAGIC = 77
@@ -114,3 +115,82 @@ def test_no_current_sl_gets_one():
     actions = manage_break_even([position], bid=2005.5, ask=2005.6, cfg=CFG, spec=SPEC)
     assert len(actions) == 1
     assert actions[0].new_sl == pytest.approx(2000.1)
+
+
+# ---------------------------------------------------------------------------
+# BUG 3 & BUG 4 tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("vol", [0.01, 0.10, 0.123, 0.001, 1.237])
+def test_volume_comment_precision_roundtrip(vol):
+    step = 0.001 if len(str(vol).split(".")[-1]) >= 3 else 0.01
+    comment = format_position_comment("GB", 2000.15, vol, 2, volume_step=step)
+    parsed = parse_position_comment(comment)
+    assert parsed is not None
+    assert parsed["initial_volume"] == pytest.approx(vol)
+
+
+def test_buy_be_and_trailing_precedence_regression():
+    """BUG 3 regression test for BUY:
+    Initial: SL = 1995
+    BE: 2000.10
+    Trailing proposal: 1999.50
+    Expected final SL: 2000.10
+    """
+    pos = make_position(is_buy=True, entry=2000.0, initial_sl=1995.0, sl=1995.0)
+    be_action = ManagementAction(
+        kind="move_sl", ticket=1, new_sl=2000.10, description="BE"
+    )
+    trailing_action = ManagementAction(
+        kind="move_sl", ticket=1, new_sl=1999.50, description="Trailing"
+    )
+    resolved = resolve_management_actions([be_action, trailing_action], [pos])
+    assert len(resolved) == 1
+    assert resolved[0].new_sl == pytest.approx(2000.10)
+
+
+def test_sell_be_and_trailing_precedence_regression():
+    """BUG 3 regression test for SELL:
+    Initial: SL = 2005
+    BE: 1999.90
+    Trailing proposal: 2000.50
+    Expected final SL: 1999.90
+    """
+    pos = make_position(is_buy=False, entry=2000.0, initial_sl=2005.0, sl=2005.0)
+    be_action = ManagementAction(
+        kind="move_sl", ticket=1, new_sl=1999.90, description="BE"
+    )
+    trailing_action = ManagementAction(
+        kind="move_sl", ticket=1, new_sl=2000.50, description="Trailing"
+    )
+    resolved = resolve_management_actions([be_action, trailing_action], [pos])
+    assert len(resolved) == 1
+    assert resolved[0].new_sl == pytest.approx(1999.90)
+
+
+def test_stronger_trailing_replaces_be_buy():
+    """Stronger trailing SL replaces BE for BUY."""
+    pos = make_position(is_buy=True, entry=2000.0, initial_sl=1995.0, sl=1995.0)
+    be_action = ManagementAction(
+        kind="move_sl", ticket=1, new_sl=2000.10, description="BE"
+    )
+    trailing_action = ManagementAction(
+        kind="move_sl", ticket=1, new_sl=2002.50, description="Trailing"
+    )
+    resolved = resolve_management_actions([be_action, trailing_action], [pos])
+    assert len(resolved) == 1
+    assert resolved[0].new_sl == pytest.approx(2002.50)
+
+
+def test_stronger_trailing_replaces_be_sell():
+    """Stronger trailing SL replaces BE for SELL."""
+    pos = make_position(is_buy=False, entry=2000.0, initial_sl=2005.0, sl=2005.0)
+    be_action = ManagementAction(
+        kind="move_sl", ticket=1, new_sl=1999.90, description="BE"
+    )
+    trailing_action = ManagementAction(
+        kind="move_sl", ticket=1, new_sl=1998.00, description="Trailing"
+    )
+    resolved = resolve_management_actions([be_action, trailing_action], [pos])
+    assert len(resolved) == 1
+    assert resolved[0].new_sl == pytest.approx(1998.00)

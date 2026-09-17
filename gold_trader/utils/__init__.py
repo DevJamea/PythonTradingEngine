@@ -7,7 +7,7 @@ from .time_utils import (
     timeframe_seconds,
     utcnow,
 )
-from .validators import ensure_finite_positive, round_price, validate_sl_tp
+from .validators import ensure_finite_positive, round_price, validate_sl_tp, validate_sl_modification
 
 __all__ = [
     "get_errors_logger",
@@ -22,4 +22,5 @@ __all__ = [
     "ensure_finite_positive",
     "round_price",
     "validate_sl_tp",
+    "validate_sl_modification",
 ]

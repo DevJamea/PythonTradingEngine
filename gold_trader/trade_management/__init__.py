@@ -10,6 +10,7 @@ from .break_even import (
 )
 from .partial_close import manage_partial_close, planned_remaining_volume
 from .pending_orders import expired_orders, find_duplicate, plan_cleanup
+from .reconciliation import resolve_management_actions
 from .trailing_stop import compute_trailing_sl, manage_trailing_stop
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "plan_cleanup",
     "compute_trailing_sl",
     "manage_trailing_stop",
+    "resolve_management_actions",
 ]

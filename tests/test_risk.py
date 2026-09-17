@@ -291,3 +291,81 @@ def test_check_duplicate_entry_directly():
     reason = check_duplicate_entry(plan, [_position(is_buy=True)], [], SPEC.point)
     assert reason is not None
     assert check_duplicate_entry(plan, [], [], SPEC.point) is None
+
+
+# ---------------------------------------------------------------------------
+# BUG 1 & BUG 6 regression tests
+# ---------------------------------------------------------------------------
+
+def test_permission_combinations():
+    live_cfg = make_cfg(trading_enabled=True, dry_run=False)
+
+    # 1. terminal allowed = false, account allowed = true, expert allowed = true -> BLOCK
+    state_term_blocked = make_state(
+        terminal_trade_allowed=False,
+        account_trade_allowed=True,
+        expert_trade_allowed=True,
+    )
+    res1 = check(live_cfg, state_term_blocked, make_plan())
+    assert not res1.allowed
+    assert any("terminal trading disabled" in f for f in res1.gate_failures)
+
+    # 2. terminal allowed = true, account allowed = false, expert allowed = true -> BLOCK
+    state_acc_blocked = make_state(
+        terminal_trade_allowed=True,
+        account_trade_allowed=False,
+        expert_trade_allowed=True,
+    )
+    res2 = check(live_cfg, state_acc_blocked, make_plan())
+    assert not res2.allowed
+    assert any("account trading disabled" in f for f in res2.gate_failures)
+
+    # 3. terminal allowed = true, account allowed = true, expert allowed = false -> BLOCK
+    state_exp_blocked = make_state(
+        terminal_trade_allowed=True,
+        account_trade_allowed=True,
+        expert_trade_allowed=False,
+    )
+    res3 = check(live_cfg, state_exp_blocked, make_plan())
+    assert not res3.allowed
+    assert any("expert trading disabled" in f for f in res3.gate_failures)
+
+    # 4. all true -> allowed to continue
+    state_all_allowed = make_state(
+        terminal_trade_allowed=True,
+        account_trade_allowed=True,
+        expert_trade_allowed=True,
+    )
+    res4 = check(live_cfg, state_all_allowed, make_plan())
+    assert res4.allowed
+    assert len(res4.gate_failures) == 0
+
+
+def test_market_usable_tick_conditions():
+    from datetime import datetime, timezone
+    from gold_trader.mt5.market_data import TickData, is_tick_usable
+
+    # 1. bid > 0, ask > 0, last = 0 -> market considered usable
+    tick_last_zero = TickData(
+        bid=2000.50, ask=2000.80, last=0.0, time=datetime.now(timezone.utc)
+    )
+    assert is_tick_usable(tick_last_zero) is True
+    assert tick_last_zero.is_usable is True
+
+    # 2. bid = 0, ask = 0 -> market unavailable
+    tick_zero = TickData(
+        bid=0.0, ask=0.0, last=0.0, time=datetime.now(timezone.utc)
+    )
+    assert is_tick_usable(tick_zero) is False
+    assert tick_zero.is_usable is False
+
+    # 3. missing/invalid tick -> market unavailable
+    assert is_tick_usable(None) is False
+    assert is_tick_usable("invalid") is False
+
+    # Inverted spread (ask < bid) -> unavailable
+    tick_inverted = TickData(
+        bid=2001.0, ask=2000.0, last=2000.5, time=datetime.now(timezone.utc)
+    )
+    assert is_tick_usable(tick_inverted) is False
+

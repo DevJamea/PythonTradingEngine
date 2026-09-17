@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import pandas as pd
 
@@ -46,6 +46,31 @@ class TickData:
     def spread(self) -> float:
         """Spread in price units (ask - bid)."""
         return self.ask - self.bid
+
+    @property
+    def is_usable(self) -> bool:
+        """True when bid > 0 and ask > 0 and ask >= bid."""
+        return is_tick_usable(self)
+
+
+def is_tick_usable(tick: Optional[Any]) -> bool:
+    """Check if market pricing is available and valid from tick data.
+
+    For Forex/CFD instruments (such as Gold/XAU), 'last' can legitimately
+    be 0 while valid Bid and Ask quotes exist. Usable market pricing exists
+    when bid > 0, ask > 0, and ask >= bid.
+    """
+    if tick is None:
+        return False
+    try:
+        bid = float(getattr(tick, "bid", 0.0) or 0.0)
+        ask = float(getattr(tick, "ask", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return False
+    import math
+    if not math.isfinite(bid) or not math.isfinite(ask):
+        return False
+    return bid > 0 and ask > 0 and ask >= bid
 
 
 def _mt5_timeframe(timeframe: str) -> int:
@@ -107,14 +132,22 @@ def get_tick(symbol: str) -> TickData:
     """Current bid/ask quote; raises MT5DataError when the market is closed."""
     mt5_api = require_mt5()
     tick = mt5_api.symbol_info_tick(symbol)
-    if tick is None or tick.bid <= 0 or tick.ask <= 0:
+    if not is_tick_usable(tick):
+        last_err = mt5_api.last_error() if hasattr(mt5_api, "last_error") else "unknown"
         raise MT5DataError(
             f"no valid tick for {symbol!r} (market closed or symbol not "
-            f"selected): {mt5_api.last_error()}"
+            f"selected): {last_err}"
         )
+    raw_last = getattr(tick, "last", 0.0)
+    last_val = float(raw_last) if raw_last is not None else 0.0
+    raw_time = getattr(tick, "time", 0)
+    if isinstance(raw_time, datetime):
+        tick_time = raw_time if raw_time.tzinfo else raw_time.replace(tzinfo=timezone.utc)
+    else:
+        tick_time = datetime.fromtimestamp(float(raw_time or 0), tz=timezone.utc)
     return TickData(
         bid=float(tick.bid),
         ask=float(tick.ask),
-        last=float(tick.last),
-        time=datetime.fromtimestamp(tick.time, tz=timezone.utc),
+        last=last_val,
+        time=tick_time,
     )

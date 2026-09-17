@@ -59,6 +59,7 @@ from .trade_management.break_even import (
 )
 from .trade_management.partial_close import manage_partial_close
 from .trade_management.pending_orders import plan_cleanup
+from .trade_management.reconciliation import resolve_management_actions
 from .trade_management.trailing_stop import manage_trailing_stop
 from .utils.logger import get_errors_logger, get_logger, get_trades_logger, setup_logging
 from .utils.time_utils import utcnow
@@ -239,7 +240,7 @@ class TradingBot:
         try:
             tick = market_data.get_tick(self.spec.name)
             spread = tick.spread
-            market_open = tick.last > 0
+            market_open = market_data.is_tick_usable(tick)
         except MT5Error as exc:
             self.log.warning("tick unavailable: %s", exc)
         closed_pnl = self._daily_closed_pnl()
@@ -256,11 +257,18 @@ class TradingBot:
             daily_pnl = closed_pnl + floating
         # SYMBOL_TRADE_MODE_FULL = 4 (official MT5)
         trade_mode_full = const("SYMBOL_TRADE_MODE_FULL", 4)
+        terminal_allowed = bool(terminal.get("trade_allowed"))
+        account_allowed = bool(account.get("trade_allowed"))
+        expert_allowed = bool(account.get("trade_expert"))
+        all_trading_allowed = terminal_allowed and account_allowed and expert_allowed
         return MarketState(
             connected=self.conn.is_connected(),
             symbol_valid=self.spec.visible and self.spec.trade_mode == trade_mode_full,
             market_open=market_open,
-            server_trading_allowed=bool(terminal.get("trade_allowed")),
+            server_trading_allowed=all_trading_allowed,
+            terminal_trade_allowed=terminal_allowed,
+            account_trade_allowed=account_allowed,
+            expert_trade_allowed=expert_allowed,
             spread=spread,
             open_position_count=len(positions),
             pending_order_count=len(pendings),
@@ -306,6 +314,7 @@ class TradingBot:
         actions: List[ManagementAction],
         positions: List[PositionInfo],
         pendings: List[PendingOrderInfo],
+        tick=None,
     ) -> None:
         pos_by_ticket = {p.ticket: p for p in positions}
         for action in actions:
@@ -314,13 +323,49 @@ class TradingBot:
                     position = pos_by_ticket.get(action.ticket)
                     if position is None:
                         continue
+                    target_sl = action.new_sl if action.new_sl is not None else position.sl
+                    target_tp = action.new_tp if action.new_tp is not None else position.tp
+
+                    # Safety invariant: never reduce protection
+                    if position.is_buy and position.sl > 0 and target_sl < position.sl - 1e-9:
+                        self.log.warning(
+                            "rejected weaker SL for BUY #%s: %.5f < current %.5f",
+                            position.ticket,
+                            target_sl,
+                            position.sl,
+                        )
+                        continue
+                    if not position.is_buy and position.sl > 0 and target_sl > position.sl + 1e-9:
+                        self.log.warning(
+                            "rejected weaker SL for SELL #%s: %.5f > current %.5f",
+                            position.ticket,
+                            target_sl,
+                            position.sl,
+                        )
+                        continue
+
                     result = mt5_positions.modify_position_sltp(
                         position,
-                        action.new_sl if action.new_sl is not None else position.sl,
-                        action.new_tp if action.new_tp is not None else position.tp,
+                        target_sl,
+                        target_tp,
                         self.spec,
+                        tick=tick,
                     )
                     self._log_order_result(action.description, result)
+                    if result.success:
+                        pos_by_ticket[position.ticket] = PositionInfo(
+                            ticket=position.ticket,
+                            symbol=position.symbol,
+                            is_buy=position.is_buy,
+                            volume=position.volume,
+                            price_open=position.price_open,
+                            sl=target_sl,
+                            tp=target_tp,
+                            profit=position.profit,
+                            magic=position.magic,
+                            comment=position.comment,
+                            open_time=position.open_time,
+                        )
                 elif action.kind in ("partial_close", "full_close"):
                     position = pos_by_ticket.get(action.ticket)
                     if position is None:
@@ -332,6 +377,7 @@ class TradingBot:
                         magic=self.cfg.magic_number,
                         deviation=self.cfg.max_deviation,
                         comment=f"goldbot {action.kind}",
+                        tick=tick,
                     )
                     self._log_order_result(action.description, result)
                 elif action.kind == "delete_order":
@@ -382,17 +428,18 @@ class TradingBot:
                 positions, tick.bid, tick.ask, atr_value, self.cfg, self.spec
             )
         if actions:
+            actions = resolve_management_actions(actions, positions)
             self.log.info(
                 "position management: %d action(s): %s",
                 len(actions),
                 "; ".join(a.description for a in actions),
             )
-            self._apply_actions(actions, positions, pendings)
+            self._apply_actions(actions, positions, pendings, tick=tick)
 
         # 2) pending order cleanup (expired orders)
         cleanup = plan_cleanup(pendings, utcnow())
         if cleanup:
-            self._apply_actions(cleanup, positions, pendings)
+            self._apply_actions(cleanup, positions, pendings, tick=tick)
 
         # 3) new entry -- only on a NEW closed candle (duplicate protection)
         last_time = df["time"].iloc[-1]
@@ -443,7 +490,11 @@ class TradingBot:
             return
 
         comment = format_position_comment(
-            self.cfg.position_comment_prefix, sltp.sl, sizing.volume, self.spec.digits
+            self.cfg.position_comment_prefix,
+            sltp.sl,
+            sizing.volume,
+            self.spec.digits,
+            volume_step=self.spec.volume_step,
         )
         plan = TradePlan(
             symbol=self.spec.name,

@@ -110,14 +110,62 @@ def build_request(
 
 
 def send_request(request: Dict[str, Any]) -> OrderResult:
-    """Send an order request; the result never hides retcode/comment."""
+    """Send an order request with preflight order_check validation;
+    the result never hides retcode/comment."""
     mt5_api = require_mt5()
+
+    action = request.get("action")
+    remove_action = const("TRADE_ACTION_REMOVE", 8)
+
+    # Preflight check via order_check for trade requests (DEAL, PENDING, SLTP)
+    if action != remove_action and hasattr(mt5_api, "order_check") and callable(mt5_api.order_check):
+        try:
+            check_res = mt5_api.order_check(request)
+        except Exception as exc:
+            logger.error("order_check raised exception: %s", exc)
+            return OrderResult(
+                False,
+                LOCAL_REJECTION,
+                f"order_check exception: {exc}",
+                0,
+                dict(request),
+            )
+
+        if check_res is None:
+            err = str(mt5_api.last_error()) if hasattr(mt5_api, "last_error") else "unknown"
+            logger.error("order_check returned None: %s", err)
+            return OrderResult(
+                False,
+                LOCAL_REJECTION,
+                f"order_check returned None: {err}",
+                0,
+                dict(request),
+            )
+
+        retcode = int(getattr(check_res, "retcode", -1))
+        # 0 (CHECK_OK), 10009 (RETCODE_DONE), 10008 (RETCODE_DONE_PARTIAL), 10010 (RETCODE_PLACED)
+        if retcode not in (0, RETCODE_DONE, RETCODE_DONE_PARTIAL, RETCODE_PLACED):
+            comment = str(getattr(check_res, "comment", "") or "rejected by order_check")
+            logger.warning(
+                "order_check rejected request: retcode=%s comment=%r",
+                retcode,
+                comment,
+            )
+            return OrderResult(
+                False,
+                retcode,
+                f"order_check rejected: {comment}",
+                0,
+                dict(request),
+            )
+
     result = mt5_api.order_send(request)
     if result is None:
+        err = str(mt5_api.last_error()) if hasattr(mt5_api, "last_error") else "unknown"
         return OrderResult(
             False,
             LOCAL_REJECTION,
-            f"order_send returned None: {mt5_api.last_error()}",
+            f"order_send returned None: {err}",
             0,
             dict(request),
         )
