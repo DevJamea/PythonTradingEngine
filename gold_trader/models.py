@@ -111,7 +111,8 @@ def default_gold_spec() -> SymbolSpec:
         stops_level=20,
         freeze_level=10,
         visible=True,
-        trade_mode=1,
+        # SYMBOL_TRADE_MODE_FULL = 4 (0=DISABLED,1=LONGONLY,2=SHORTONLY,3=CLOSEONLY,4=FULL)
+        trade_mode=4,
         contract_size=100.0,
         trade_tick_size=0.01,
         trade_tick_value=1.0,

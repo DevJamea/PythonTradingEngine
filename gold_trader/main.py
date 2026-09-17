@@ -39,6 +39,7 @@ from .models import (
 from .mt5 import market_data, orders as mt5_orders
 from .mt5 import positions as mt5_positions
 from .mt5 import symbols as mt5_symbols
+from .mt5._constants import const
 from .mt5.connection import (
     MT5_AVAILABLE,
     MT5Connection,
@@ -88,6 +89,7 @@ class TradingBot:
         """Connect, discover the gold symbol, validate the account mode."""
         self._connect_and_discover()
         self._log_account_mode()
+        self._enforce_demo_safety()
         self.log.info(
             "Bot ready. dry_run=%s trading_enabled=%s timeframe=%s interval=%.0fs",
             self.cfg.dry_run,
@@ -128,6 +130,58 @@ class TradingBot:
                 "HEDGING positions must not be handled the same way)"
             )
 
+    def _enforce_demo_safety(self) -> None:
+        """Hard safety gate: REAL accounts must never receive live orders.
+
+        If TRADING_ENABLED=true and DRY_RUN=false, the account MUST be
+        a Demo account (ACCOUNT_TRADE_MODE_DEMO = 0). Otherwise abort.
+        """
+        if not (self.cfg.trading_enabled and not self.cfg.dry_run):
+            return
+        try:
+            info = self.conn.account_info()
+            trade_mode = info.get("trade_mode")
+            # Official MT5: 0=DEMO, 1=CONTEST, 2=REAL
+            # Some wrappers document 0=REAL,1=DEMO,2=CONTEST - we handle both
+            # by reading the constant names if available.
+            mt5_api = require_mt5()
+            demo_const = getattr(mt5_api, "ACCOUNT_TRADE_MODE_DEMO", 0)
+            real_const = getattr(mt5_api, "ACCOUNT_TRADE_MODE_REAL", 2)
+            # If trade_mode equals REAL, block.
+            if trade_mode == real_const:
+                raise MT5ConnectionError(
+                    f"CRITICAL SAFETY: Trading is enabled (TRADING_ENABLED=true, "
+                    f"DRY_RUN=false) but the connected account is REAL "
+                    f"(trade_mode={trade_mode}). Aborting to prevent live trading. "
+                    f"Use a Demo account."
+                )
+            # If we have explicit DEMO constant, require DEMO when live trading
+            if demo_const is not None and trade_mode != demo_const:
+                # Allow CONTEST as well? For safety, only DEMO is allowed for live.
+                # If it's CONTEST, still block unless explicitly allowed.
+                # Here we block anything that is not DEMO when live trading is on.
+                if trade_mode != demo_const:
+                    # Check if it's contest - still block for safety
+                    self.log.warning(
+                        "Live trading enabled but account trade_mode=%s != DEMO (%s). "
+                        "Blocking as safety measure.",
+                        trade_mode,
+                        demo_const,
+                    )
+                    raise MT5ConnectionError(
+                        f"CRITICAL SAFETY: Live trading requires a Demo account, "
+                        f"but trade_mode={trade_mode} != DEMO ({demo_const}). Aborting."
+                    )
+        except MT5Error:
+            raise
+        except Exception as exc:
+            self.log.warning("could not verify account trade mode for safety: %s", exc)
+            # Fail safe: if we cannot determine, block live trading
+            if self.cfg.trading_enabled and not self.cfg.dry_run:
+                raise MT5ConnectionError(
+                    f"Could not verify Demo account status ({exc}) - blocking live trading"
+                ) from exc
+
     # -- data helpers ------------------------------------------------------
 
     def _load_data(self) -> Optional[pd.DataFrame]:
@@ -151,8 +205,11 @@ class TradingBot:
             )
         )
 
-    def _daily_closed_pnl(self) -> float:
-        """Realized P/L of today's bot deals (profit + commission + swap)."""
+    def _daily_closed_pnl(self) -> Optional[float]:
+        """Realized P/L of today's bot deals (profit + commission + swap).
+
+        Returns None when history is unavailable so the caller can fail-safe.
+        """
         mt5_api = require_mt5()
         try:
             day_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -168,9 +225,9 @@ class TradingBot:
             )
         except MT5Error as exc:
             self.log.error(
-                "daily P/L unavailable (%s) - using floating P/L only", exc
+                "daily P/L unavailable (%s) - will block new entries as fail-safe", exc
             )
-            return 0.0
+            return None
 
     def _build_market_state(
         self, positions: List[PositionInfo], pendings: List[PendingOrderInfo]
@@ -185,10 +242,23 @@ class TradingBot:
             market_open = tick.last > 0
         except MT5Error as exc:
             self.log.warning("tick unavailable: %s", exc)
-        daily_pnl = self._daily_closed_pnl() + sum(p.profit for p in positions)
+        closed_pnl = self._daily_closed_pnl()
+        floating = sum(p.profit for p in positions)
+        if closed_pnl is None:
+            # Fail-safe: if history unavailable, treat daily loss as breached
+            # so risk gate blocks new entries (floating P/L still tracked in logs).
+            daily_pnl = -abs(self.cfg.max_daily_loss) - 1.0 + floating
+            self.log.warning(
+                "daily closed P/L unknown - forcing daily_pnl=%.2f to block new trades",
+                daily_pnl,
+            )
+        else:
+            daily_pnl = closed_pnl + floating
+        # SYMBOL_TRADE_MODE_FULL = 4 (official MT5)
+        trade_mode_full = const("SYMBOL_TRADE_MODE_FULL", 4)
         return MarketState(
             connected=self.conn.is_connected(),
-            symbol_valid=self.spec.visible and self.spec.trade_mode == 1,
+            symbol_valid=self.spec.visible and self.spec.trade_mode == trade_mode_full,
             market_open=market_open,
             server_trading_allowed=bool(terminal.get("trade_allowed")),
             spread=spread,

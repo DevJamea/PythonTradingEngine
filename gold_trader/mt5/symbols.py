@@ -87,7 +87,9 @@ def _try_symbol(name: str, by_name: Dict[str, Any]) -> Optional[SymbolSpec]:
     if not info.visible:
         logger.info("candidate %s: not visible", name)
         return None
-    trade_mode_full = const("SYMBOL_TRADE_MODE_FULL", 1)
+    # Official MT5 SYMBOL_TRADE_MODE values:
+    # 0=DISABLED, 1=LONGONLY, 2=SHORTONLY, 3=CLOSEONLY, 4=FULL
+    trade_mode_full = const("SYMBOL_TRADE_MODE_FULL", 4)
     if info.trade_mode != trade_mode_full:
         logger.info(
             "candidate %s: trade mode %s is not FULL", name, info.trade_mode
