@@ -1,0 +1,8 @@
+pandas>=2.0
+numpy>=1.24
+python-dotenv>=1.0
+pytest>=7.4
+
+# MetaTrader5 is Windows-only (requires a local MT5 terminal).
+# On non-Windows machines install only the packages above and skip this line.
+MetaTrader5>=5.0.45
