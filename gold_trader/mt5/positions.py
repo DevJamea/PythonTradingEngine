@@ -70,7 +70,7 @@ def close_position(
         )
     close_type = OrderType.SELL if position.is_buy else OrderType.BUY
     request = {
-        "action": const("ORDER_ACTION_DEAL", 1),
+        "action": const("TRADE_ACTION_DEAL", 1),
         "symbol": position.symbol,
         "volume": float(close_volume),
         "type": _order_type_value(close_type),
@@ -88,7 +88,8 @@ def modify_position_sltp(
 ) -> OrderResult:
     """Move the SL/TP of an open position (e.g. break-even, trailing)."""
     request = {
-        "action": const("ORDER_ACTION_SLTP", 4),
+        # TRADE_ACTION_SLTP = 6 (official)
+        "action": const("TRADE_ACTION_SLTP", 6),
         "position": int(position.ticket),
         "symbol": position.symbol,
         "sl": round(float(sl), spec.digits),

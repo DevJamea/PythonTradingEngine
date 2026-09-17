@@ -22,13 +22,14 @@ logger = logging.getLogger("gold_trader.mt5.market_data")
 
 #: Documented MT5 timeframe constants (used only when the package cannot
 #: be imported, e.g. on non-Windows machines).
+#: Official MT5 Python values: M1=1, M5=5, M15=15, M30=30, H1=16385, H4=16388
 _TIMEFRAME_FALLBACKS: Dict[str, int] = {
     "M1": 1,
     "M5": 5,
     "M15": 15,
     "M30": 30,
-    "H1": 64001,
-    "H4": 64004,
+    "H1": 16385,
+    "H4": 16388,
 }
 
 

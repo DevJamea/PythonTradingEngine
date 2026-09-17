@@ -150,11 +150,20 @@ class MT5Connection:
         return info._asdict() if hasattr(info, "_asdict") else dict(info)
 
     def account_mode(self) -> AccountMode:
-        """NETTING or HEDGING -- never assume which one the account uses."""
+        """NETTING or HEDGING -- never assume which one the account uses.
+
+        Official MT5 ACCOUNT_MARGIN_MODE values:
+            0 = ACCOUNT_MARGIN_MODE_RETAIL_NETTING (netting)
+            1 = ACCOUNT_MARGIN_MODE_EXCHANGE (exchange, also netting)
+            2 = ACCOUNT_MARGIN_MODE_RETAIL_HEDGING (hedging)
+        """
         info = self.account_info()
         mode = info.get("margin_mode")
         if mode == 0:
-            return AccountMode.HEDGING
-        if mode == 1:
             return AccountMode.NETTING
+        if mode == 1:
+            # EXCHANGE mode is netting for position accounting
+            return AccountMode.NETTING
+        if mode == 2:
+            return AccountMode.HEDGING
         raise MT5Error(f"unknown account margin mode: {mode!r}")

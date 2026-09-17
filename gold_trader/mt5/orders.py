@@ -78,9 +78,23 @@ def build_request(
     comment: str,
     spec: SymbolSpec,
 ) -> Dict[str, Any]:
-    """Build a complete, explicit order request dict (no hidden fields)."""
+    """Build a complete, explicit order request dict (no hidden fields).
+
+    Market orders use TRADE_ACTION_DEAL (1), pending orders use
+    TRADE_ACTION_PENDING (5) per official MT5 Python constants.
+    """
+    is_pending = order_type in (
+        OrderType.BUY_LIMIT,
+        OrderType.BUY_STOP,
+        OrderType.SELL_LIMIT,
+        OrderType.SELL_STOP,
+    )
+    if is_pending:
+        action = const("TRADE_ACTION_PENDING", 5)
+    else:
+        action = const("TRADE_ACTION_DEAL", 1)
     return {
-        "action": const("ORDER_ACTION_DEAL", 1),
+        "action": action,
         "symbol": symbol,
         "volume": float(volume),
         "type": _order_type_value(order_type),
@@ -321,7 +335,8 @@ def get_pending_orders(
 def delete_order(ticket: int) -> OrderResult:
     """Delete a pending order (by ticket)."""
     request = {
-        "action": const("ORDER_ACTION_DELETE", 5),
+        # TRADE_ACTION_REMOVE = 8 (official), fallback 8
+        "action": const("TRADE_ACTION_REMOVE", 8),
         "order": int(ticket),
     }
     return send_request(request)
