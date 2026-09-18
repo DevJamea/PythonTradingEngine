@@ -43,6 +43,9 @@ def make_state(**overrides):
         symbol_valid=True,
         market_open=True,
         server_trading_allowed=True,
+        terminal_trade_allowed=True,
+        account_trade_allowed=True,
+        expert_trade_allowed=True,
         spread=0.25,
         open_position_count=0,
         pending_order_count=0,
@@ -368,4 +371,61 @@ def test_market_usable_tick_conditions():
         bid=2001.0, ask=2000.0, last=2000.5, time=datetime.now(timezone.utc)
     )
     assert is_tick_usable(tick_inverted) is False
+
+
+def test_market_state_permission_defaults_are_fail_safe():
+    """MarketState() with no permission args must be restrictive (fail-safe)."""
+    from gold_trader.models import MarketState
+
+    state = MarketState(
+        connected=True,
+        symbol_valid=True,
+        market_open=True,
+        server_trading_allowed=True,
+        spread=0.25,
+        open_position_count=0,
+        pending_order_count=0,
+        daily_pnl=0.0,
+        account_balance=10_000.0,
+        account_equity=10_000.0,
+        now=datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc),
+    )
+    # Defaults must be False (fail-safe)
+    assert state.terminal_trade_allowed is False
+    assert state.account_trade_allowed is False
+    assert state.expert_trade_allowed is False
+
+    # Trading must be blocked when permissions default to False
+    cfg = make_cfg(trading_enabled=True, dry_run=False)
+    decision = check(cfg, state, make_plan())
+    assert not decision.allowed
+    # At least one permission failure should be reported
+    assert any("trading disabled" in f for f in decision.gate_failures)
+
+
+def test_market_state_all_permissions_true_allows_trading():
+    """Explicit True permissions must allow trading when other gates pass."""
+    from gold_trader.models import MarketState
+
+    state = MarketState(
+        connected=True,
+        symbol_valid=True,
+        market_open=True,
+        server_trading_allowed=True,
+        terminal_trade_allowed=True,
+        account_trade_allowed=True,
+        expert_trade_allowed=True,
+        spread=0.25,
+        open_position_count=0,
+        pending_order_count=0,
+        daily_pnl=0.0,
+        account_balance=10_000.0,
+        account_equity=10_000.0,
+        now=datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc),
+    )
+    cfg = make_cfg(trading_enabled=True, dry_run=False)
+    decision = check(cfg, state, make_plan())
+    assert decision.allowed
+    assert decision.would_trade
+    assert decision.gate_failures == []
 
