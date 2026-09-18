@@ -63,7 +63,15 @@ def close_position(
 
     ``volume=None`` closes the full position. Valid for both NETTING and
     HEDGING account modes.
+
+    If a valid market price (Bid for BUY close, Ask for SELL close) is
+    unavailable, the close is rejected locally without calling
+    order_check() or order_send().
     """
+    import logging
+
+    logger = logging.getLogger("gold_trader.mt5.positions")
+
     close_volume = position.volume if volume is None else volume
     if close_volume <= 0 or close_volume > position.volume:
         raise ValueError(
@@ -90,16 +98,45 @@ def close_position(
         except Exception:
             tick = None
 
+    bid = 0.0
+    ask = 0.0
     if tick is not None:
         try:
             bid = float(getattr(tick, "bid", 0.0) or 0.0)
             ask = float(getattr(tick, "ask", 0.0) or 0.0)
-            if position.is_buy and bid > 0:
-                request["price"] = round(bid, spec.digits)
-            elif not position.is_buy and ask > 0:
-                request["price"] = round(ask, spec.digits)
         except (TypeError, ValueError):
-            pass
+            bid = 0.0
+            ask = 0.0
+
+    # Explicit fail-safe: required market price must be available
+    if position.is_buy:
+        if not (bid > 0):
+            logger.error(
+                "Cannot close position: valid Bid/Ask unavailable (BUY close requires Bid>0, ticket=%s)",
+                position.ticket,
+            )
+            return OrderResult(
+                success=False,
+                retcode=const("TRADE_RETCODE_INVALID_PRICE", 10015),
+                comment="Cannot close position: valid Bid/Ask unavailable",
+                order=0,
+                request=dict(request),
+            )
+        request["price"] = round(bid, spec.digits)
+    else:
+        if not (ask > 0):
+            logger.error(
+                "Cannot close position: valid Bid/Ask unavailable (SELL close requires Ask>0, ticket=%s)",
+                position.ticket,
+            )
+            return OrderResult(
+                success=False,
+                retcode=const("TRADE_RETCODE_INVALID_PRICE", 10015),
+                comment="Cannot close position: valid Bid/Ask unavailable",
+                order=0,
+                request=dict(request),
+            )
+        request["price"] = round(ask, spec.digits)
 
     return send_request(request)
 

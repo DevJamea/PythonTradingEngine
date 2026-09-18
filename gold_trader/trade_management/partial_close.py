@@ -115,15 +115,38 @@ def manage_partial_close(
                 )
                 continue
         else:
-            kind = (
-                "full_close"
-                if close_volume >= position.volume - spec.volume_step / 2
-                else "partial_close"
-            )
-            description = (
-                f"{kind} #{position.ticket}: close {close_volume:.2f} of "
-                f"{position.volume:.2f} (target remaining {target:.4f})"
-            )
+            remaining = position.volume - close_volume
+            # Ensure remaining is broker-valid; if remaining would be invalid (<min),
+            # treat as dust remainder: full close if final level exists, else skip.
+            if remaining > 1e-9 and remaining < spec.volume_min - 1e-9:
+                if has_final_level and position.volume >= spec.volume_min:
+                    close_volume = round_volume_to_step(position.volume, spec.volume_step)
+                    kind = "full_close"
+                    description = (
+                        f"final level reached #{position.ticket}: closing remaining "
+                        f"{close_volume:.2f} (remaining {remaining:.4f} below minimum "
+                        f"{spec.volume_min})"
+                    )
+                else:
+                    logger.info(
+                        "partial close skipped for #%s: remaining %.4f after close %.4f "
+                        "is below broker minimum %.4f (no invalid order will be sent)",
+                        position.ticket,
+                        remaining,
+                        close_volume,
+                        spec.volume_min,
+                    )
+                    continue
+            else:
+                kind = (
+                    "full_close"
+                    if close_volume >= position.volume - spec.volume_step / 2
+                    else "partial_close"
+                )
+                description = (
+                    f"{kind} #{position.ticket}: close {close_volume:.2f} of "
+                    f"{position.volume:.2f} (target remaining {target:.4f})"
+                )
         actions.append(
             ManagementAction(
                 kind=kind,
