@@ -12,6 +12,7 @@ Covers:
 - Break-even + trailing (BE only, trailing only, conflict resolution, precedence)
 - Partial close (volume steps 0.01 and 0.001, min volume, precision preservation)
 - Pending orders (BUY_LIMIT, BUY_STOP, SELL_LIMIT, SELL_STOP, distance validation)
+- Pending order type constants (official ENUM_ORDER_TYPE values, mock/fallback parity)
 """
 from __future__ import annotations
 
@@ -32,6 +33,9 @@ from gold_trader.models import (
 )
 from gold_trader.mt5.market_data import TickData, get_tick, is_tick_usable
 from gold_trader.mt5.orders import (
+    _ORDER_TYPE_FALLBACK,
+    _order_type_from_int,
+    _order_type_value,
     place_buy_limit,
     place_buy_stop,
     place_market_buy,
@@ -114,8 +118,9 @@ def mock_mt5():
     mock.ORDER_TYPE_BUY = 0
     mock.ORDER_TYPE_SELL = 1
     mock.ORDER_TYPE_BUY_LIMIT = 2
-    mock.ORDER_TYPE_BUY_STOP = 3
-    mock.ORDER_TYPE_SELL_LIMIT = 4
+    # Official ENUM_ORDER_TYPE ordering: LIMIT/STOP alternate by side.
+    mock.ORDER_TYPE_SELL_LIMIT = 3
+    mock.ORDER_TYPE_BUY_STOP = 4
     mock.ORDER_TYPE_SELL_STOP = 5
     mock.ORDER_TIME_GTC = 0
     mock.ORDER_FILLING_FOK = 0
@@ -608,6 +613,71 @@ def test_pending_sell_stop(mock_mt5):
     assert req["action"] == mock_mt5.TRADE_ACTION_PENDING
     assert req["type"] == mock_mt5.ORDER_TYPE_SELL_STOP
     assert req["price"] == 1990.0
+
+
+# ---------------------------------------------------------------------------
+# 8b. PENDING ORDER TYPE CONSTANTS (regression: BUY_STOP/SELL_LIMIT swap)
+# ---------------------------------------------------------------------------
+
+#: Official ENUM_ORDER_TYPE values shipped by the MetaTrader5 Python package
+#: (MetaTrader5/__init__.py, "order types, ENUM_ORDER_TYPE"). Hard-coded on
+#: purpose: these tests must fail if the production fallback table OR the
+#: test mock drifts away from the real terminal constants.
+OFFICIAL_ORDER_TYPES = {
+    "BUY": 0,
+    "SELL": 1,
+    "BUY_LIMIT": 2,
+    "SELL_LIMIT": 3,
+    "BUY_STOP": 4,
+    "SELL_STOP": 5,
+}
+
+
+def test_order_type_fallback_matches_official_mt5_constants():
+    """The non-Windows fallback table must equal the real MT5 constants."""
+    assert _ORDER_TYPE_FALLBACK == OFFICIAL_ORDER_TYPES
+
+
+def test_mock_mt5_order_types_match_official_constants(mock_mt5):
+    """The mock must faithfully represent the real MetaTrader5 constants."""
+    for name, value in OFFICIAL_ORDER_TYPES.items():
+        assert getattr(mock_mt5, f"ORDER_TYPE_{name}") == value, name
+
+
+def test_mock_and_production_order_types_agree(mock_mt5):
+    """Mock and production must never disagree about an order type value."""
+    for order_type in OrderType:
+        assert _order_type_value(order_type) == getattr(
+            mock_mt5, f"ORDER_TYPE_{order_type.value}"
+        ), order_type.value
+
+
+def test_order_type_int_round_trip():
+    """int -> OrderType is the exact inverse (BUY_STOP is not SELL_LIMIT)."""
+    for order_type in OrderType:
+        assert _order_type_from_int(_order_type_value(order_type)) is order_type
+
+
+def test_pending_requests_carry_official_order_type_values(mock_mt5):
+    """Each place_* helper must emit the official numeric order type."""
+    spec = _make_spec(stops_level=20)  # min distance 0.20
+    tick = _make_tick(bid=2000.0, ask=2000.3)
+    cases = [
+        (place_buy_limit, 1990.0, OFFICIAL_ORDER_TYPES["BUY_LIMIT"]),
+        (place_buy_stop, 2010.0, OFFICIAL_ORDER_TYPES["BUY_STOP"]),
+        (place_sell_limit, 2010.0, OFFICIAL_ORDER_TYPES["SELL_LIMIT"]),
+        (place_sell_stop, 1990.0, OFFICIAL_ORDER_TYPES["SELL_STOP"]),
+    ]
+    for place_fn, price, expected_type in cases:
+        mock_mt5.order_send.reset_mock()
+        result = place_fn(
+            spec, tick, volume=0.1, price=price, sl=1980.0, tp=2030.0,
+            magic=77, deviation=10, comment="regression",
+        )
+        assert result.success is True, place_fn.__name__
+        req = mock_mt5.order_send.call_args[0][0]
+        assert req["action"] == 5, place_fn.__name__  # TRADE_ACTION_PENDING
+        assert req["type"] == expected_type, place_fn.__name__
 
 
 def test_pending_invalid_distances_rejected_locally(mock_mt5):

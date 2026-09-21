@@ -35,13 +35,16 @@ RETCODE_PLACED = 10010
 #: retcode used for local rejections (nothing was sent to the server).
 LOCAL_REJECTION = -1
 
-#: Documented fallback values for the official ORDER_TYPE_* constants.
+#: Documented fallback values for the official ORDER_TYPE_* constants
+#: (ENUM_ORDER_TYPE, MetaTrader5 Python package): BUY=0, SELL=1,
+#: BUY_LIMIT=2, SELL_LIMIT=3, BUY_STOP=4, SELL_STOP=5. Note that the
+#: LIMIT/STOP ordering alternates by side -- SELL_LIMIT precedes BUY_STOP.
 _ORDER_TYPE_FALLBACK: Dict[str, int] = {
     "BUY": 0,
     "SELL": 1,
     "BUY_LIMIT": 2,
-    "BUY_STOP": 3,
-    "SELL_LIMIT": 4,
+    "SELL_LIMIT": 3,
+    "BUY_STOP": 4,
     "SELL_STOP": 5,
 }
 
