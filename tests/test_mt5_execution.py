@@ -13,6 +13,7 @@ Covers:
 - Partial close (volume steps 0.01 and 0.001, min volume, precision preservation)
 - Pending orders (BUY_LIMIT, BUY_STOP, SELL_LIMIT, SELL_STOP, distance validation)
 - Pending order type constants (official ENUM_ORDER_TYPE values, mock/fallback parity)
+- Retcode labels (official ENUM_TRADE_RETCODE values, acceptance set unchanged)
 """
 from __future__ import annotations
 
@@ -32,7 +33,11 @@ from gold_trader.models import (
     TradePlan,
 )
 from gold_trader.mt5.market_data import TickData, get_tick, is_tick_usable
+from gold_trader.mt5._constants import const
 from gold_trader.mt5.orders import (
+    RETCODE_DONE,
+    RETCODE_DONE_PARTIAL,
+    RETCODE_PLACED,
     _ORDER_TYPE_FALLBACK,
     _order_type_from_int,
     _order_type_value,
@@ -127,8 +132,9 @@ def mock_mt5():
     mock.ORDER_FILLING_IOC = 1
     mock.ORDER_FILLING_RETURN = 2
     mock.TRADE_RETCODE_DONE = 10009
-    mock.TRADE_RETCODE_DONE_PARTIAL = 10008
-    mock.TRADE_RETCODE_PLACED = 10010
+    # Official ENUM_TRADE_RETCODE values.
+    mock.TRADE_RETCODE_PLACED = 10008
+    mock.TRADE_RETCODE_DONE_PARTIAL = 10010
     mock.TRADE_RETCODE_INVALID_STOPS = 10016
     mock.TRADE_RETCODE_INVALID_PRICE = 10015
     mock.TRADE_RETCODE_INVALID_VOLUME = 10014
@@ -703,6 +709,46 @@ def test_pending_invalid_distances_rejected_locally(mock_mt5):
     r4 = place_sell_stop(spec, tick, volume=0.1, price=1999.90, sl=2020.0, tp=1980.0, magic=77, deviation=10, comment="bad")
     assert not mock_mt5.order_send.called
     assert r4.success is False
+
+
+# ===========================================================================
+# 8c. RETCODE LABELS (regression: PLACED / DONE_PARTIAL were swapped)
+# ===========================================================================
+
+#: Official ENUM_TRADE_RETCODE values shipped by the MetaTrader5 Python
+#: package (MetaTrader5/__init__.py). Hard-coded on purpose.
+OFFICIAL_RETCODES = {"TRADE_RETCODE_PLACED": 10008, "TRADE_RETCODE_DONE": 10009,
+                     "TRADE_RETCODE_DONE_PARTIAL": 10010}
+
+
+def test_retcode_labels_match_official_mt5_constants():
+    """Local retcode labels must carry the official ENUM_TRADE_RETCODE values."""
+    assert RETCODE_PLACED == OFFICIAL_RETCODES["TRADE_RETCODE_PLACED"]
+    assert RETCODE_DONE == OFFICIAL_RETCODES["TRADE_RETCODE_DONE"]
+    assert RETCODE_DONE_PARTIAL == OFFICIAL_RETCODES["TRADE_RETCODE_DONE_PARTIAL"]
+
+
+def test_retcode_labels_agree_with_mt5_constants():
+    """Labels must equal MT5's own constants (or the documented fallback)."""
+    assert RETCODE_PLACED == const("TRADE_RETCODE_PLACED", 10008)
+    assert RETCODE_DONE == const("TRADE_RETCODE_DONE", 10009)
+    assert RETCODE_DONE_PARTIAL == const("TRADE_RETCODE_DONE_PARTIAL", 10010)
+
+
+def test_accepted_retcode_membership_unchanged(mock_mt5):
+    """Acceptance is unchanged: exactly {10008, 10009, 10010} are accepted."""
+    assert {RETCODE_PLACED, RETCODE_DONE, RETCODE_DONE_PARTIAL} == {10008, 10009, 10010}
+
+    request = {
+        "action": 1, "symbol": "XAUUSD", "volume": 0.1, "type": 0,
+        "price": 2000.8, "sl": 1990.0, "tp": 2010.0, "deviation": 10,
+        "magic": 77, "comment": "retcode",
+    }
+    for retcode in (10008, 10009, 10010, 10004, 10006, 10013, 10016, 10019):
+        mock_mt5.order_send.return_value = MockTradeSendResult(retcode, "rc", 12345)
+        result = send_request(request)
+        assert result.retcode == retcode
+        assert result.success is (retcode in (10008, 10009, 10010)), retcode
 
 
 # ===========================================================================
