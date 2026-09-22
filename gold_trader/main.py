@@ -523,7 +523,7 @@ class TradingBot:
         # 3) new entry -- only on a NEW closed candle (duplicate protection)
         last_time = df["time"].iloc[-1]
         if self._last_candle_time == last_time:
-            self.log.debug("no new closed candle (last=%s)", last_time)
+            self.log.info("cycle complete: no new closed candle yet (last=%s)", last_time)
             return
         self._last_candle_time = last_time
         self._evaluate_entry(df, state, tick, positions, pendings, atr_value)
