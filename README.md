@@ -48,6 +48,13 @@ to be used on Demo accounts. Even if you flip the safety switches later,
 you should keep the account on Demo until you have strong reasons — and
 full understanding — to consider anything else.
 
+A live `order_send` also requires the connected account to be a confirmed
+Demo account. A REAL account, or an account whose type cannot be read, is
+denied by the central execution gate — including when `cycle()` is called
+directly. A per-call permission cannot override that. The block is logged
+as `WOULD EXECUTE: blocked by demo safety`, and neither `order_check` nor
+`order_send` is called.
+
 ## 5. Installation (project)
 
 ```bash
@@ -147,9 +154,11 @@ listing what it tried — it never guesses.
 With `DRY_RUN=true` (the default) the full pipeline runs — data, signals,
 SL/TP, sizing, every risk gate, and position management — but **no
 `order_send` is performed**. The same block applies when
-`TRADING_ENABLED=false`, including break-even, trailing, partial/full
-close and expired-pending deletion. Those actions are logged as
-`WOULD EXECUTE` instead of being sent. A new entry looks like:
+`TRADING_ENABLED=false`, or when the account is REAL or its type is
+unknown, including break-even, trailing, partial/full close and
+expired-pending deletion. Those actions are logged as `WOULD EXECUTE`
+instead of being sent. A non-demo account is logged as
+`WOULD EXECUTE: blocked by demo safety`. A new entry looks like:
 
 ```
 SIGNAL: BUY

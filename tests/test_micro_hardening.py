@@ -14,12 +14,16 @@ import pytest
 
 import gold_trader.mt5.connection as mt5_conn
 from gold_trader.models import MarketState, PositionInfo, SymbolSpec
-from gold_trader.mt5.execution_gate import ExecutionPermission, execution_permission
+from gold_trader.mt5.execution_gate import (
+    ExecutionPermission,
+    execution_permission,
+    refresh_verified_account_safety,
+)
 from gold_trader.mt5.market_data import TickData
 from gold_trader.mt5.positions import close_position
 from gold_trader.trade_management.break_even import format_position_comment
 from gold_trader.trade_management.partial_close import manage_partial_close
-from tests._helpers import make_cfg
+from tests._helpers import make_cfg, publish_terminal_account
 
 
 def _make_spec(volume_min=0.05, volume_step=0.01, volume_max=10.0):
@@ -81,14 +85,17 @@ def mock_mt5():
     mock.order_send.return_value = MockSend()
     mock.last_error.return_value = (0, "Success")
 
-    # Opt in only for this execution-layer fixture. The safety default is deny.
+    # Opt in only for this execution-layer fixture. The stub proves Demo
+    # through account_info; a forged account_is_demo=True is not accepted.
     allow = ExecutionPermission(trading_enabled=True, dry_run=False)
     with (
         patch.object(mt5_conn, "MT5_AVAILABLE", True),
         patch.object(mt5_conn, "_mt5", mock),
-        execution_permission(allow),
     ):
-        yield mock
+        publish_terminal_account(0)
+        assert refresh_verified_account_safety() is True
+        with execution_permission(allow):
+            yield mock
 
 
 # ---------------------------------------------------------------------------

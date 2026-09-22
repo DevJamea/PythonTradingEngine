@@ -51,7 +51,12 @@ from gold_trader.trade_management.break_even import (
 from gold_trader.trade_management.partial_close import manage_partial_close
 from gold_trader.trade_management.pending_orders import plan_cleanup
 from gold_trader.trade_management.trailing_stop import manage_trailing_stop
-from tests._helpers import make_cfg, make_downtrend_with_engulfing, make_uptrend_with_engulfing
+from tests._helpers import (
+    make_cfg,
+    make_downtrend_with_engulfing,
+    make_uptrend_with_engulfing,
+    publish_terminal_account,
+)
 
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
 TICK = TickData(bid=2010.0, ask=2010.3, last=2010.1, time=NOW)
@@ -151,6 +156,24 @@ def _bot(trading_enabled: bool, dry_run: bool, **cfg_overrides) -> TradingBot:
     bot = TradingBot(cfg)
     bot.spec = _spec()
     return bot
+
+
+def _confirm_demo(bot: TradingBot, trade_mode: int = 0) -> None:
+    """Stub a confirmed Demo account so a live-switch test may reach the stub.
+
+    The proof is the broker ``account_info`` object, not a caller-set
+    ``account_is_demo=True``. These tests do not describe a REAL account.
+    """
+    bot.conn.is_connected = lambda: True
+    bot.conn.account_info = lambda: {
+        "balance": 10_000.0,
+        "equity": 10_000.0,
+        "trade_allowed": True,
+        "trade_expert": True,
+        "trade_mode": trade_mode,
+    }
+    bot.conn.terminal_info = lambda: {"trade_allowed": True, "connected": True}
+    publish_terminal_account(trade_mode)
 
 
 def _assert_no_send(mt5_stub, caplog) -> None:
@@ -317,7 +340,14 @@ def test_default_permission_denies_without_any_install():
     assert permission.allows_order_send is False
     assert ExecutionPermission(trading_enabled=True, dry_run=True).allows_order_send is False
     assert ExecutionPermission(trading_enabled=False, dry_run=False).allows_order_send is False
-    assert ExecutionPermission(trading_enabled=True, dry_run=False).allows_order_send is True
+    assert ExecutionPermission(trading_enabled=True, dry_run=False).allows_order_send is False
+    assert ExecutionPermission(
+        trading_enabled=True, dry_run=False, account_is_demo=False
+    ).allows_order_send is False
+    # The field is not a grant. Only a broker proof opens the latch.
+    assert ExecutionPermission(
+        trading_enabled=True, dry_run=False, account_is_demo=True
+    ).allows_order_send is False
 
 
 def test_env_flags_do_not_open_the_gate(monkeypatch, mt5_stub, caplog):
@@ -374,19 +404,34 @@ def test_from_env_installs_the_permission_explicitly(monkeypatch, mt5_stub):
     assert cfg.trading_enabled is True
     assert cfg.dry_run is False
     bot = TradingBot(cfg)
-    assert get_execution_permission().allows_order_send is True
+    # Switches come from the application. Without a confirmed Demo account
+    # the gate stays closed — orders.py still does not read the environment.
+    installed = get_execution_permission()
+    assert installed.trading_enabled is True
+    assert installed.dry_run is False
+    assert installed.account_is_demo is False
+    assert installed.allows_order_send is False
     result = place_market_buy(
         _spec(), TICK, volume=0.1, sl=1995.0, tp=2020.0, magic=77, deviation=10, comment="wired"
     )
-    assert result.success is True
+    assert result.blocked_by_safety
+    assert mt5_stub.order_send.call_count == 0
+    assert mt5_stub.order_check.call_count == 0
+    _confirm_demo(bot)
+    bot._install_execution_gate()
+    assert get_execution_permission().allows_order_send is True
+    sent = place_market_buy(
+        _spec(), TICK, volume=0.1, sl=1995.0, tp=2020.0, magic=77, deviation=10, comment="wired"
+    )
+    assert sent.success is True
     assert mt5_stub.order_send.call_count == 1
-    # Keep the bot referenced so the install is clearly from this config.
     assert bot.cfg.trading_enabled and not bot.cfg.dry_run
 
 
 @pytest.mark.parametrize("side", ["BUY", "SELL"])
 def test_live_entry_reaches_order_send_only_when_risk_gates_pass(side, mt5_stub):
     bot = _bot(True, False)
+    _confirm_demo(bot)
     df = make_uptrend_with_engulfing() if side == "BUY" else make_downtrend_with_engulfing()
     bot._evaluate_entry(df, _passing_state(), TICK, [], [], 1.5)
     assert mt5_stub.order_send.call_count == 1
@@ -410,6 +455,7 @@ def test_live_management_and_pending_reach_the_stub(mt5_stub):
         partial_close_enabled=False,
         trailing_stop_enabled=False,
     )
+    _confirm_demo(be_bot)
     pos = _position()
     be = manage_break_even([pos], TICK.bid, TICK.ask, be_bot.cfg, be_bot.spec)
     assert be
@@ -424,6 +470,7 @@ def test_live_management_and_pending_reach_the_stub(mt5_stub):
         trailing_stop_enabled=True,
         trailing_atr_multiplier=1.0,
     )
+    _confirm_demo(trail_bot)
     trail = manage_trailing_stop([pos], TICK.bid, TICK.ask, 2.0, trail_bot.cfg, trail_bot.spec)
     assert trail
     trail_bot._apply_actions(trail, [pos], [], tick=TICK)
@@ -437,6 +484,7 @@ def test_live_management_and_pending_reach_the_stub(mt5_stub):
         partial_close_enabled=True,
         partial_close_levels=((1.0, 0.5),),
     )
+    _confirm_demo(partial_bot)
     partial = manage_partial_close([pos], TICK.bid, TICK.ask, partial_bot.cfg, partial_bot.spec)
     assert partial and partial[0].kind == "partial_close"
     partial_bot._apply_actions(partial, [pos], [], tick=TICK)
@@ -450,6 +498,7 @@ def test_live_management_and_pending_reach_the_stub(mt5_stub):
         partial_close_enabled=True,
         partial_close_levels=((1.0, 1.0),),
     )
+    _confirm_demo(full_bot)
     full = manage_partial_close([pos], TICK.bid, TICK.ask, full_bot.cfg, full_bot.spec)
     assert full and full[0].kind == "full_close"
     full_bot._apply_actions(full, [pos], [], tick=TICK)
@@ -515,12 +564,7 @@ def test_live_cycle_management_reaches_stub_when_gates_allow(mt5_stub):
         partial_close_enabled=False,
         trailing_stop_enabled=False,
     )
-    bot.conn.is_connected = lambda: True
-    bot.conn.account_info = lambda: {
-        "balance": 10_000.0, "equity": 10_000.0,
-        "trade_allowed": True, "trade_expert": True, "trade_mode": 0,
-    }
-    bot.conn.terminal_info = lambda: {"trade_allowed": True, "connected": True}
+    _confirm_demo(bot)
     pos = _position()
     pending = _expired_pending()
     df = make_uptrend_with_engulfing()
@@ -550,6 +594,9 @@ def test_order_send_call_sites_are_only_inside_send_request():
     assert {name for name, _, _ in call_sites} == {"orders.py"}
     orders = (root / "mt5" / "orders.py").read_text(encoding="utf-8")
     body = orders.split("def send_request", 1)[1].split("\ndef ", 1)[0]
-    assert "resolve_execution_permission" in body
-    assert "WOULD EXECUTE" in body
-    assert body.index("order_send(") > body.index("resolve_execution_permission")
+    code = body.split('"""', 2)[-1]
+    assert "resolve_execution_permission" in code
+    assert "WOULD EXECUTE" in code
+    assert code.index("order_send(") > code.index("resolve_execution_permission")
+    assert code.index("demote_verified_demo_if_stale") < code.index("order_check(")
+    assert code.index("order_check(") < code.index("order_send(")

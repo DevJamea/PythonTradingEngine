@@ -9,9 +9,11 @@ pending order the distance to the current price is checked against the
 broker ``stops_level``.
 
 Every live send goes through :func:`send_request`. That function refuses
-``order_send`` (and the preflight ``order_check``) unless an
-:class:`~gold_trader.mt5.execution_gate.ExecutionPermission` allowing live
-execution has been installed. This module does not read ``.env``.
+``order_send`` (and the preflight ``order_check``) unless the installed
+configuration switches allow live execution and the execution gate still
+holds a fresh Demo proof. This module does not read ``.env``. It does not
+decide the account mode itself: before any broker call it asks the gate to
+drop a stale Demo proof, and a caller-supplied permission cannot create one.
 """
 from __future__ import annotations
 
@@ -29,7 +31,12 @@ from ..models import (
 )
 from ._constants import const
 from .connection import MT5Error, require_mt5
-from .execution_gate import ExecutionPermission, resolve_execution_permission
+from .execution_gate import (
+    ExecutionPermission,
+    demote_verified_demo_if_stale,
+    resolve_execution_permission,
+    verified_account_is_demo,
+)
 from .market_data import TickData
 
 logger = logging.getLogger("gold_trader.mt5.orders")
@@ -138,25 +145,43 @@ def send_request(
     """Send an order request, or record WOULD EXECUTE when live sends are closed.
 
     This is the only production path to ``mt5.order_send``. The installed
-    execution permission (injected by the application from its config, never
-    read from ``.env`` here) must allow live execution. An explicit
-    ``permission`` may only narrow that gate.
+    configuration switches must allow live execution, and the Demo latch
+    must still match a fresh ``account_info`` read. An explicit ``permission``
+    may only narrow the switches. It cannot mark a non-demo account as demo,
+    and this function will not promote a closed latch to open.
 
     When the gate is closed, neither ``order_check`` nor ``order_send`` is
     called. The returned result has ``blocked_by_safety=True`` and a comment
     that starts with ``WOULD EXECUTE``.
     """
-    block_reason = resolve_execution_permission(permission).block_reason()
+    # Drop a stale Demo proof before the permission check. Never opens the
+    # latch: that requires refresh_verified_account_safety() after a real read.
+    demote_verified_demo_if_stale()
+    resolved = resolve_execution_permission(permission)
+    block_reason = resolved.block_reason()
     if block_reason is not None:
+        # Exact phrase operators and tests look for when the account is not
+        # a confirmed Demo. Logged before order_check / order_send, and not
+        # something a per-call permission can suppress.
+        if not verified_account_is_demo():
+            logger.info("WOULD EXECUTE: blocked by demo safety")
         logger.info(
             "WOULD EXECUTE | blocked before order_send (%s) | %s",
             block_reason,
             _format_request(request),
         )
+        if not verified_account_is_demo():
+            # Keep the required phrase exact when Demo safety is the only
+            # reason; append the switch reasons when those are closed too.
+            comment = "WOULD EXECUTE: blocked by demo safety"
+            if block_reason != "blocked by demo safety":
+                comment = f"{comment} ({block_reason})"
+        else:
+            comment = f"WOULD EXECUTE ({block_reason})"
         return OrderResult(
             success=False,
             retcode=LOCAL_REJECTION,
-            comment=f"WOULD EXECUTE ({block_reason})",
+            comment=comment,
             order=0,
             request=dict(request),
             blocked_by_safety=True,

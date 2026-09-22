@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any
 
 import pandas as pd
 
 from gold_trader.config import Config
+
+# Sentinel: publish an account whose trade_mode cannot be read.
+_UNSET: Any = object()
 
 
 def make_cfg(**overrides) -> Config:
@@ -75,3 +79,59 @@ def make_downtrend_with_engulfing(n_ramp: int = 220, n_retrace: int = 6) -> pd.D
     engulf_close = price - 1.9
     rows.append((engulf_open, engulf_open + 0.2, engulf_close - 0.2, engulf_close))
     return build_df(rows)
+
+
+class TerminalAccount:
+    """Minimal ``account_info()`` object. Omit ``trade_mode`` with ``_UNSET``."""
+
+    def __init__(self, trade_mode: Any = _UNSET) -> None:
+        self.login = 10001
+        self.server = "Stub-Server"
+        self.currency = "USD"
+        self.balance = 10_000.0
+        self.equity = 10_000.0
+        self.trade_allowed = True
+        self.trade_expert = True
+        self.margin_mode = 2
+        self._include_mode = trade_mode is not _UNSET
+        if self._include_mode:
+            self.trade_mode = trade_mode
+
+    def _asdict(self) -> dict:
+        data = {
+            "login": self.login,
+            "server": self.server,
+            "currency": self.currency,
+            "balance": self.balance,
+            "equity": self.equity,
+            "trade_allowed": self.trade_allowed,
+            "trade_expert": self.trade_expert,
+            "margin_mode": self.margin_mode,
+        }
+        if self._include_mode:
+            data["trade_mode"] = self.trade_mode
+        return data
+
+
+def publish_terminal_account(
+    trade_mode: Any = _UNSET,
+    *,
+    explode: bool = False,
+) -> None:
+    """Point the patched MT5 module at a broker account.
+
+    Opt-in execution tests must prove Demo through this object. Writing
+    ``account_is_demo=True`` on a permission is not a substitute.
+    """
+    from gold_trader.mt5.connection import require_mt5
+
+    api = require_mt5()
+    if not isinstance(getattr(api, "ACCOUNT_TRADE_MODE_DEMO", None), int):
+        api.ACCOUNT_TRADE_MODE_DEMO = 0
+    if not isinstance(getattr(api, "ACCOUNT_TRADE_MODE_REAL", None), int):
+        api.ACCOUNT_TRADE_MODE_REAL = 2
+    if explode:
+        api.account_info.side_effect = RuntimeError("account_info unavailable")
+        return
+    api.account_info.side_effect = None
+    api.account_info.return_value = TerminalAccount(trade_mode)

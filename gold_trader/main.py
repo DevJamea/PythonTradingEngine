@@ -14,6 +14,9 @@ Safety model:
 * those switches are installed as an explicit execution permission and
   enforced again inside ``send_request``, so management actions (SL/TP,
   close, partial close, delete) cannot reach ``order_send`` either;
+* Demo safety is a separate broker proof. A caller cannot declare
+  ``account_is_demo=True``. After any reconnect the proof is dropped until
+  the current account is verified again;
 * if today's closed P/L cannot be read, new entries are blocked regardless
   of floating P/L (``daily_pnl_known=False``);
 * the account must be a Demo account;
@@ -43,7 +46,12 @@ from .models import (
 )
 from .mt5 import market_data, orders as mt5_orders
 from .mt5 import positions as mt5_positions
-from .mt5.execution_gate import ExecutionPermission, install_execution_permission
+from .mt5.execution_gate import (
+    ExecutionPermission,
+    clear_verified_account_safety,
+    install_execution_permission,
+    refresh_verified_account_safety,
+)
 from .mt5 import symbols as mt5_symbols
 from .mt5._constants import const
 from .mt5.connection import (
@@ -93,17 +101,39 @@ class TradingBot:
         self._install_execution_gate()
 
     def _install_execution_gate(self) -> None:
-        """Push this bot's switches into the central order_send gate.
+        """Refresh the broker proof, then install this bot's switches.
 
-        Re-installed at the start of each cycle and before each send path so
-        a previously widened permission cannot outlive this config.
+        Re-installed at the start of each cycle and before each management
+        path so a previously widened permission cannot outlive this config.
+        Demo status comes only from a fresh ``account_info`` read inside the
+        gate — never from ``.env`` and never from a caller-supplied
+        ``account_is_demo=True``. Unknown is not Demo.
         """
+        self._account_is_demo()
+        self._install_switches()
+
+    def _install_switches(self) -> None:
+        """Install configuration switches without reading or opening Demo."""
         install_execution_permission(
             ExecutionPermission(
                 trading_enabled=self.cfg.trading_enabled,
                 dry_run=self.cfg.dry_run,
             )
         )
+
+    def _close_execution_until_verified(self) -> None:
+        """Drop the Demo proof. Switches stay; no send is allowed until a new proof."""
+        clear_verified_account_safety()
+        self._install_switches()
+
+    def _account_is_demo(self) -> bool:
+        """True only when a fresh terminal read proves ``ACCOUNT_TRADE_MODE_DEMO``.
+
+        This is the bot's explicit verification. It does not accept a caller
+        declaration, and it does not read the environment. REAL, contest, a
+        missing constant, and any failure latch False.
+        """
+        return refresh_verified_account_safety()
 
     # -- lifecycle -------------------------------------------------------
 
@@ -610,16 +640,33 @@ class TradingBot:
             self.shutdown()
 
     def _reconnect(self) -> None:
-        self.conn.shutdown()
+        """Reconnect, then verify the account that this session actually opened.
+
+        The previous Demo proof is dropped before shutdown and stays dropped
+        through the retry sleep. A send in that window cannot reuse it, and
+        cannot open a new proof: only the refresh after a successful session
+        may do that. A failed reconnect does not refresh, so execution remains
+        closed until a later successful verification (the next cycle, or a
+        later reconnect that completes).
+        """
+        self._close_execution_until_verified()
+        session_opened = False
         try:
+            self.conn.shutdown()
             self.conn.initialize()
             self.spec = mt5_symbols.find_gold_symbol(
                 preferred=self.spec.name if self.spec else self.cfg.symbol,
                 candidates=self.cfg.gold_symbol_candidates,
             )
             time.sleep(5.0)
+            session_opened = True
         except MT5Error as exc:
             self.error_log.error("reconnect failed: %s - retrying next cycle", exc)
+        finally:
+            if session_opened:
+                self._install_execution_gate()
+            else:
+                self._close_execution_until_verified()
 
     def run_once(self) -> int:
         """Single cycle (useful for smoke tests on a Demo terminal)."""

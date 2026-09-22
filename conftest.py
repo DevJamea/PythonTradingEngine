@@ -11,14 +11,24 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import gold_trader.mt5.connection as mt5_conn
-from gold_trader.mt5.execution_gate import ExecutionPermission, execution_permission
+from gold_trader.mt5.execution_gate import (
+    ExecutionPermission,
+    clear_verified_account_safety,
+    execution_permission,
+)
 
 
 @pytest.fixture(autouse=True)
 def _deny_live_execution_by_default():
-    """Restore the safe default even if a test installs a live permission."""
+    """Restore the safe default even if a test installs a live permission.
+
+    Also drops any Demo proof. A previous test's verified latch must not
+    leak, and a test cannot opt in by writing ``account_is_demo=True``.
+    """
+    clear_verified_account_safety()
     with execution_permission(ExecutionPermission()):
         yield
+    clear_verified_account_safety()
 
 
 @pytest.fixture
