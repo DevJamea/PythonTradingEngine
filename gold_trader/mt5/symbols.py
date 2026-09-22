@@ -38,6 +38,35 @@ def is_gold_symbol(name: str) -> bool:
     return bool(_GOLD_PATTERN.match(name.strip()))
 
 
+#: Sentinel distinguishing "attribute missing" from "attribute is None".
+_MISSING: Any = object()
+
+
+def _symbol_field(info: Any, official: str, legacy: str) -> Any:
+    """Return one symbol property by its official MetaTrader5 field name.
+
+    MetaTrader5.symbol_info()/symbols_get() officially expose the stop
+    and freeze distances as ``trade_stops_level`` / ``trade_freeze_level``
+    (MetaQuotes docs) -- the short names ``stops_level``/``freeze_level``
+    never existed on real terminals (they raised AttributeError on the
+    first Windows + MT5 run). Reads ``official`` first; falls back to
+    ``legacy`` only for project test doubles / fallback objects that
+    still use the short names. Raises AttributeError when neither name
+    exists, so a missing broker field is never silently replaced by a
+    constant -- values always come from the broker object.
+    """
+    value = getattr(info, official, _MISSING)
+    if value is not _MISSING:
+        return value
+    value = getattr(info, legacy, _MISSING)
+    if value is not _MISSING:
+        return value
+    raise AttributeError(
+        f"symbol info has neither {official!r} nor {legacy!r} "
+        f"(object type: {type(info).__name__})"
+    )
+
+
 class GoldSymbolNotFoundError(MT5Error):
     """No tradable gold symbol was found on the server."""
 
@@ -134,6 +163,8 @@ def _try_symbol(name: str, by_name: Dict[str, Any]) -> Optional[SymbolSpec]:
         logger.info("candidate %s: invalid point/digits", name)
         return None
 
+    # MetaTrader5.symbol_info() officially exposes trade_stops_level and
+    # trade_freeze_level (NOT stops_level / freeze_level).
     return SymbolSpec(
         name=name,
         point=float(info.point),
@@ -141,8 +172,8 @@ def _try_symbol(name: str, by_name: Dict[str, Any]) -> Optional[SymbolSpec]:
         volume_min=float(info.volume_min),
         volume_max=float(info.volume_max),
         volume_step=float(info.volume_step),
-        stops_level=int(info.stops_level),
-        freeze_level=int(info.freeze_level),
+        stops_level=int(_symbol_field(info, "trade_stops_level", "stops_level")),
+        freeze_level=int(_symbol_field(info, "trade_freeze_level", "freeze_level")),
         visible=bool(info.visible),
         trade_mode=int(info.trade_mode),
         contract_size=float(info.trade_contract_size),
