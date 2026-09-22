@@ -101,14 +101,14 @@ Key settings (defaults in `gold_trader/config.py`, overridable via env):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `TRADING_ENABLED` | `false` | Master kill-switch. No real order is ever sent while `false`. |
-| `DRY_RUN` | `true` | Simulated execution: prints the order it *would* send, sends nothing. |
+| `TRADING_ENABLED` | `false` | Master kill-switch. No `order_send` (entry, pending, SL/TP, close, delete) while `false`. |
+| `DRY_RUN` | `true` | Simulated execution: logs what it WOULD send, including management actions. Sends nothing. |
 | `SYMBOL` | *(empty)* | Leave empty for **automatic gold symbol discovery**. |
 | `GOLD_SYMBOL_CANDIDATES` | `XAUUSD,GOLD,XAUUSDm,...` | Priority list for discovery. |
 | `TIMEFRAME` | `M15` | M1, M5, M15, M30, H1, H4. |
 | `MAGIC_NUMBER` | `123456789` | Identifies the bot's orders/positions. **Change it per broker account.** |
 | `RISK_PER_TRADE` | `0.005` | Risk 0.5% of equity per trade. |
-| `MAX_DAILY_LOSS` | `500` | Stop opening trades when daily loss (realized + floating) exceeds this. |
+| `MAX_DAILY_LOSS` | `500` | Stop opening trades when known daily loss (realized + floating) exceeds this. If closed-P/L history is unavailable, new entries are blocked regardless of floating P/L. |
 | `MAX_OPEN_POSITIONS` | `1` | Bot positions limit. |
 | `MAX_PENDING_ORDERS` | `2` | Bot pending orders limit. |
 | `MAX_SPREAD` | `0.50` | Skip entries when the spread (price units) is wider. |
@@ -145,8 +145,11 @@ listing what it tried — it never guesses.
 ## 10. Dry Run
 
 With `DRY_RUN=true` (the default) the full pipeline runs — data, signals,
-SL/TP, sizing, every risk gate — but **no `order_send` is performed**.
-Instead you get:
+SL/TP, sizing, every risk gate, and position management — but **no
+`order_send` is performed**. The same block applies when
+`TRADING_ENABLED=false`, including break-even, trailing, partial/full
+close and expired-pending deletion. Those actions are logged as
+`WOULD EXECUTE` instead of being sent. A new entry looks like:
 
 ```
 SIGNAL: BUY

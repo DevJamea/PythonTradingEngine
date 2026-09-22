@@ -174,13 +174,19 @@ class TradePlan:
 
 @dataclass
 class OrderResult:
-    """Outcome of an ``order_send`` call (or a local rejection)."""
+    """Outcome of an ``order_send`` call, or a local rejection.
+
+    ``blocked_by_safety`` is True when the execution gate refused the send
+    (``TRADING_ENABLED`` is false or ``DRY_RUN`` is true). Nothing was sent
+    to the terminal; callers should log WOULD EXECUTE, not a broker failure.
+    """
 
     success: bool
     retcode: int
     comment: str
     order: int
     request: Dict[str, Any] = field(default_factory=dict)
+    blocked_by_safety: bool = False
 
     def summary(self) -> str:
         """One-line, log-safe summary (the request never contains secrets)."""
@@ -214,6 +220,10 @@ class MarketState:
     terminal_trade_allowed: bool = False
     account_trade_allowed: bool = False
     expert_trade_allowed: bool = False
+    # Fail-safe: unknown history must not look like a known P/L. ``daily_pnl``
+    # is meaningful only when this flag is True. Do not encode "unknown" as a
+    # numeric sentinel — adding floating P/L can cancel it and reopen the gate.
+    daily_pnl_known: bool = False
 
 
 @dataclass

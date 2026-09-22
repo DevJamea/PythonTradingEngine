@@ -14,6 +14,7 @@ import pytest
 
 import gold_trader.mt5.connection as mt5_conn
 from gold_trader.models import MarketState, PositionInfo, SymbolSpec
+from gold_trader.mt5.execution_gate import ExecutionPermission, execution_permission
 from gold_trader.mt5.market_data import TickData
 from gold_trader.mt5.positions import close_position
 from gold_trader.trade_management.break_even import format_position_comment
@@ -80,7 +81,13 @@ def mock_mt5():
     mock.order_send.return_value = MockSend()
     mock.last_error.return_value = (0, "Success")
 
-    with patch.object(mt5_conn, "MT5_AVAILABLE", True), patch.object(mt5_conn, "_mt5", mock):
+    # Opt in only for this execution-layer fixture. The safety default is deny.
+    allow = ExecutionPermission(trading_enabled=True, dry_run=False)
+    with (
+        patch.object(mt5_conn, "MT5_AVAILABLE", True),
+        patch.object(mt5_conn, "_mt5", mock),
+        execution_permission(allow),
+    ):
         yield mock
 
 
@@ -105,6 +112,7 @@ def test_market_state_defaults_fail_safe():
     assert state.terminal_trade_allowed is False
     assert state.account_trade_allowed is False
     assert state.expert_trade_allowed is False
+    assert state.daily_pnl_known is False
 
 
 def test_market_state_missing_permissions_blocks_trade():
@@ -159,6 +167,7 @@ def test_market_state_all_true_allows():
         account_balance=10000.0,
         account_equity=10000.0,
         now=datetime(2026, 9, 18, 12, 0, tzinfo=timezone.utc),
+        daily_pnl_known=True,
     )
     plan = TradePlan(
         symbol="XAUUSD",

@@ -87,7 +87,11 @@ def check_trade(
         failures.append(
             f"pending orders {state.pending_order_count} >= max {cfg.max_pending_orders}"
         )
-    if state.daily_pnl <= -abs(cfg.max_daily_loss):
+    if not state.daily_pnl_known:
+        # Fail closed. A positive floating P/L must not clear this gate when
+        # today's closed P/L could not be read.
+        failures.append("daily P/L history unavailable")
+    elif state.daily_pnl <= -abs(cfg.max_daily_loss):
         failures.append(
             f"daily loss limit reached ({state.daily_pnl:.2f} <= -{abs(cfg.max_daily_loss):.2f})"
         )

@@ -11,6 +11,11 @@ Safety model:
 * ``TRADING_ENABLED=false`` and ``DRY_RUN=true`` are the defaults;
 * no real order is sent unless BOTH are changed manually in the
   environment (see .env.example);
+* those switches are installed as an explicit execution permission and
+  enforced again inside ``send_request``, so management actions (SL/TP,
+  close, partial close, delete) cannot reach ``order_send`` either;
+* if today's closed P/L cannot be read, new entries are blocked regardless
+  of floating P/L (``daily_pnl_known=False``);
 * the account must be a Demo account;
 * a live run prints a loud warning when it is about to send real orders.
 """
@@ -38,6 +43,7 @@ from .models import (
 )
 from .mt5 import market_data, orders as mt5_orders
 from .mt5 import positions as mt5_positions
+from .mt5.execution_gate import ExecutionPermission, install_execution_permission
 from .mt5 import symbols as mt5_symbols
 from .mt5._constants import const
 from .mt5.connection import (
@@ -83,6 +89,21 @@ class TradingBot:
         self.spec: Optional[SymbolSpec] = None
         self._last_candle_time: Optional[pd.Timestamp] = None
         self._recent_signals: Deque[Tuple[pd.Timestamp, str]] = deque(maxlen=20)
+        # Install before any cycle. orders.py does not read .env itself.
+        self._install_execution_gate()
+
+    def _install_execution_gate(self) -> None:
+        """Push this bot's switches into the central order_send gate.
+
+        Re-installed at the start of each cycle and before each send path so
+        a previously widened permission cannot outlive this config.
+        """
+        install_execution_permission(
+            ExecutionPermission(
+                trading_enabled=self.cfg.trading_enabled,
+                dry_run=self.cfg.dry_run,
+            )
+        )
 
     # -- lifecycle -------------------------------------------------------
 
@@ -246,14 +267,18 @@ class TradingBot:
         closed_pnl = self._daily_closed_pnl()
         floating = sum(p.profit for p in positions)
         if closed_pnl is None:
-            # Fail-safe: if history unavailable, treat daily loss as breached
-            # so risk gate blocks new entries (floating P/L still tracked in logs).
-            daily_pnl = -abs(self.cfg.max_daily_loss) - 1.0 + floating
+            # Fail closed on an explicit flag. Do not invent a numeric
+            # sentinel: adding floating P/L (e.g. +600) used to cancel
+            # ``-max_daily_loss - 1`` and reopen the daily-loss gate.
+            daily_pnl_known = False
+            daily_pnl = 0.0
             self.log.warning(
-                "daily closed P/L unknown - forcing daily_pnl=%.2f to block new trades",
-                daily_pnl,
+                "daily closed P/L unknown (history unavailable) - new entries "
+                "blocked regardless of floating P/L (floating=%.2f)",
+                floating,
             )
         else:
+            daily_pnl_known = True
             daily_pnl = closed_pnl + floating
         # SYMBOL_TRADE_MODE_FULL = 4 (official MT5)
         trade_mode_full = const("SYMBOL_TRADE_MODE_FULL", 4)
@@ -276,17 +301,36 @@ class TradingBot:
             account_balance=float(account.get("balance", 0.0)),
             account_equity=float(account.get("equity", 0.0)),
             now=utcnow(),
+            daily_pnl_known=daily_pnl_known,
         )
 
     # -- order result logging -----------------------------------------------
 
     def _log_order_result(self, description: str, result) -> None:
+        if getattr(result, "blocked_by_safety", False):
+            self.trades_log.info(
+                "WOULD EXECUTE | %s | %s", description, result.summary()
+            )
+            return
         if result.success:
             self.trades_log.info("%s | %s", description, result.summary())
         else:
             self.error_log.error("%s FAILED | %s", description, result.summary())
 
     def _log_trade_executed(self, plan: TradePlan, result) -> None:
+        if getattr(result, "blocked_by_safety", False):
+            self.trades_log.info(
+                "WOULD EXECUTE | %s %s | entry=%.5f | sl=%.5f | tp=%.5f | "
+                "volume=%.2f | %s",
+                plan.order_type.value,
+                plan.symbol,
+                plan.entry,
+                plan.sl,
+                plan.tp,
+                plan.volume or 0.0,
+                result.comment,
+            )
+            return
         self.trades_log.info(
             "EXECUTED | ts=%s | signal=%s | order_type=%s | symbol=%s | "
             "entry=%.5f | sl=%.5f | tp=%.5f | volume=%.2f | risk=%.2f | "
@@ -316,6 +360,10 @@ class TradingBot:
         pendings: List[PendingOrderInfo],
         tick=None,
     ) -> None:
+        # Re-assert this bot's switches before any management send. The
+        # choke point remains send_request; this stops a widened permission
+        # from outliving the config that owns these actions.
+        self._install_execution_gate()
         pos_by_ticket = {p.ticket: p for p in positions}
         for action in actions:
             try:
@@ -392,6 +440,7 @@ class TradingBot:
 
     def cycle(self) -> None:
         """One full loop iteration (data -> manage -> signal -> execute)."""
+        self._install_execution_gate()
         if not self.conn.is_connected():
             raise MT5ConnectionError("not connected to MT5 terminal")
 
@@ -458,6 +507,7 @@ class TradingBot:
         pendings: List[PendingOrderInfo],
         atr_value: Optional[float],
     ) -> None:
+        self._install_execution_gate()
         signal = strategy_signals.generate_signal(df, self.cfg)
         last_time = df["time"].iloc[-1]
         self._recent_signals.append(

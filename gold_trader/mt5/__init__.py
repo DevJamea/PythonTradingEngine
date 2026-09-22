@@ -16,6 +16,12 @@ from .connection import (
     MT5Error,
     require_mt5,
 )
+from .execution_gate import (
+    ExecutionPermission,
+    execution_permission,
+    get_execution_permission,
+    install_execution_permission,
+)
 from .market_data import TickData, drop_unclosed_candle, get_candles, get_tick, is_tick_usable
 from .orders import (
     delete_order,
@@ -44,6 +50,10 @@ __all__ = [
     "MT5DataError",
     "MT5Error",
     "require_mt5",
+    "ExecutionPermission",
+    "execution_permission",
+    "get_execution_permission",
+    "install_execution_permission",
     "TickData",
     "drop_unclosed_candle",
     "get_candles",

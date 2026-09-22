@@ -32,6 +32,7 @@ from gold_trader.models import (
     SymbolSpec,
     TradePlan,
 )
+from gold_trader.mt5.execution_gate import ExecutionPermission, execution_permission
 from gold_trader.mt5.market_data import TickData, get_tick, is_tick_usable
 from gold_trader.mt5._constants import const
 from gold_trader.mt5.orders import (
@@ -146,7 +147,14 @@ def mock_mt5():
     mock.order_send.return_value = MockTradeSendResult(10009, "Order placed", 12345)
     mock.last_error.return_value = (0, "Success")
 
-    with patch.object(mt5_conn, "MT5_AVAILABLE", True), patch.object(mt5_conn, "_mt5", mock):
+    # These tests exercise request construction against a stub. Live sends are
+    # an explicit opt-in; production stays deny unless Config installs allow.
+    allow = ExecutionPermission(trading_enabled=True, dry_run=False)
+    with (
+        patch.object(mt5_conn, "MT5_AVAILABLE", True),
+        patch.object(mt5_conn, "_mt5", mock),
+        execution_permission(allow),
+    ):
         yield mock
 
 

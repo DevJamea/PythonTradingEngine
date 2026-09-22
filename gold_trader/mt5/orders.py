@@ -7,6 +7,11 @@ The filling mode is read from the symbol properties -- never assumed:
 FOK when the symbol supports it, else IOC, else RETURN. Before placing a
 pending order the distance to the current price is checked against the
 broker ``stops_level``.
+
+Every live send goes through :func:`send_request`. That function refuses
+``order_send`` (and the preflight ``order_check``) unless an
+:class:`~gold_trader.mt5.execution_gate.ExecutionPermission` allowing live
+execution has been installed. This module does not read ``.env``.
 """
 from __future__ import annotations
 
@@ -24,6 +29,7 @@ from ..models import (
 )
 from ._constants import const
 from .connection import MT5Error, require_mt5
+from .execution_gate import ExecutionPermission, resolve_execution_permission
 from .market_data import TickData
 
 logger = logging.getLogger("gold_trader.mt5.orders")
@@ -115,9 +121,47 @@ def build_request(
     }
 
 
-def send_request(request: Dict[str, Any]) -> OrderResult:
-    """Send an order request with preflight order_check validation;
-    the result never hides retcode/comment."""
+def _format_request(request: Dict[str, Any]) -> str:
+    """Compact, secret-free description of a request for WOULD/result logs."""
+    keys = (
+        "action", "symbol", "type", "volume", "price", "sl", "tp",
+        "order", "position", "magic",
+    )
+    return " ".join(f"{key}={request[key]}" for key in keys if key in request)
+
+
+def send_request(
+    request: Dict[str, Any],
+    *,
+    permission: Optional[ExecutionPermission] = None,
+) -> OrderResult:
+    """Send an order request, or record WOULD EXECUTE when live sends are closed.
+
+    This is the only production path to ``mt5.order_send``. The installed
+    execution permission (injected by the application from its config, never
+    read from ``.env`` here) must allow live execution. An explicit
+    ``permission`` may only narrow that gate.
+
+    When the gate is closed, neither ``order_check`` nor ``order_send`` is
+    called. The returned result has ``blocked_by_safety=True`` and a comment
+    that starts with ``WOULD EXECUTE``.
+    """
+    block_reason = resolve_execution_permission(permission).block_reason()
+    if block_reason is not None:
+        logger.info(
+            "WOULD EXECUTE | blocked before order_send (%s) | %s",
+            block_reason,
+            _format_request(request),
+        )
+        return OrderResult(
+            success=False,
+            retcode=LOCAL_REJECTION,
+            comment=f"WOULD EXECUTE ({block_reason})",
+            order=0,
+            request=dict(request),
+            blocked_by_safety=True,
+        )
+
     mt5_api = require_mt5()
 
     action = request.get("action")
