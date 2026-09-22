@@ -29,19 +29,25 @@ from .market_data import TickData
 logger = logging.getLogger("gold_trader.mt5.orders")
 
 #: MT5 retcodes that mean the request was fully/partially accepted.
+#: Official ENUM_TRADE_RETCODE values (MetaTrader5 Python package):
+#: TRADE_RETCODE_PLACED=10008, TRADE_RETCODE_DONE=10009,
+#: TRADE_RETCODE_DONE_PARTIAL=10010.
+RETCODE_PLACED = 10008
 RETCODE_DONE = 10009
-RETCODE_DONE_PARTIAL = 10008
-RETCODE_PLACED = 10010
+RETCODE_DONE_PARTIAL = 10010
 #: retcode used for local rejections (nothing was sent to the server).
 LOCAL_REJECTION = -1
 
-#: Documented fallback values for the official ORDER_TYPE_* constants.
+#: Documented fallback values for the official ORDER_TYPE_* constants
+#: (ENUM_ORDER_TYPE, MetaTrader5 Python package): BUY=0, SELL=1,
+#: BUY_LIMIT=2, SELL_LIMIT=3, BUY_STOP=4, SELL_STOP=5. Note that the
+#: LIMIT/STOP ordering alternates by side -- SELL_LIMIT precedes BUY_STOP.
 _ORDER_TYPE_FALLBACK: Dict[str, int] = {
     "BUY": 0,
     "SELL": 1,
     "BUY_LIMIT": 2,
-    "BUY_STOP": 3,
-    "SELL_LIMIT": 4,
+    "SELL_LIMIT": 3,
+    "BUY_STOP": 4,
     "SELL_STOP": 5,
 }
 
@@ -143,7 +149,7 @@ def send_request(request: Dict[str, Any]) -> OrderResult:
             )
 
         retcode = int(getattr(check_res, "retcode", -1))
-        # 0 (CHECK_OK), 10009 (RETCODE_DONE), 10008 (RETCODE_DONE_PARTIAL), 10010 (RETCODE_PLACED)
+        # 0 (CHECK_OK), 10008 (RETCODE_PLACED), 10009 (RETCODE_DONE), 10010 (RETCODE_DONE_PARTIAL)
         if retcode not in (0, RETCODE_DONE, RETCODE_DONE_PARTIAL, RETCODE_PLACED):
             comment = str(getattr(check_res, "comment", "") or "rejected by order_check")
             logger.warning(

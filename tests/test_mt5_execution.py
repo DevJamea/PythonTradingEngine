@@ -12,6 +12,8 @@ Covers:
 - Break-even + trailing (BE only, trailing only, conflict resolution, precedence)
 - Partial close (volume steps 0.01 and 0.001, min volume, precision preservation)
 - Pending orders (BUY_LIMIT, BUY_STOP, SELL_LIMIT, SELL_STOP, distance validation)
+- Pending order type constants (official ENUM_ORDER_TYPE values, mock/fallback parity)
+- Retcode labels (official ENUM_TRADE_RETCODE values, acceptance set unchanged)
 """
 from __future__ import annotations
 
@@ -31,7 +33,14 @@ from gold_trader.models import (
     TradePlan,
 )
 from gold_trader.mt5.market_data import TickData, get_tick, is_tick_usable
+from gold_trader.mt5._constants import const
 from gold_trader.mt5.orders import (
+    RETCODE_DONE,
+    RETCODE_DONE_PARTIAL,
+    RETCODE_PLACED,
+    _ORDER_TYPE_FALLBACK,
+    _order_type_from_int,
+    _order_type_value,
     place_buy_limit,
     place_buy_stop,
     place_market_buy,
@@ -114,16 +123,18 @@ def mock_mt5():
     mock.ORDER_TYPE_BUY = 0
     mock.ORDER_TYPE_SELL = 1
     mock.ORDER_TYPE_BUY_LIMIT = 2
-    mock.ORDER_TYPE_BUY_STOP = 3
-    mock.ORDER_TYPE_SELL_LIMIT = 4
+    # Official ENUM_ORDER_TYPE ordering: LIMIT/STOP alternate by side.
+    mock.ORDER_TYPE_SELL_LIMIT = 3
+    mock.ORDER_TYPE_BUY_STOP = 4
     mock.ORDER_TYPE_SELL_STOP = 5
     mock.ORDER_TIME_GTC = 0
     mock.ORDER_FILLING_FOK = 0
     mock.ORDER_FILLING_IOC = 1
     mock.ORDER_FILLING_RETURN = 2
     mock.TRADE_RETCODE_DONE = 10009
-    mock.TRADE_RETCODE_DONE_PARTIAL = 10008
-    mock.TRADE_RETCODE_PLACED = 10010
+    # Official ENUM_TRADE_RETCODE values.
+    mock.TRADE_RETCODE_PLACED = 10008
+    mock.TRADE_RETCODE_DONE_PARTIAL = 10010
     mock.TRADE_RETCODE_INVALID_STOPS = 10016
     mock.TRADE_RETCODE_INVALID_PRICE = 10015
     mock.TRADE_RETCODE_INVALID_VOLUME = 10014
@@ -610,6 +621,71 @@ def test_pending_sell_stop(mock_mt5):
     assert req["price"] == 1990.0
 
 
+# ---------------------------------------------------------------------------
+# 8b. PENDING ORDER TYPE CONSTANTS (regression: BUY_STOP/SELL_LIMIT swap)
+# ---------------------------------------------------------------------------
+
+#: Official ENUM_ORDER_TYPE values shipped by the MetaTrader5 Python package
+#: (MetaTrader5/__init__.py, "order types, ENUM_ORDER_TYPE"). Hard-coded on
+#: purpose: these tests must fail if the production fallback table OR the
+#: test mock drifts away from the real terminal constants.
+OFFICIAL_ORDER_TYPES = {
+    "BUY": 0,
+    "SELL": 1,
+    "BUY_LIMIT": 2,
+    "SELL_LIMIT": 3,
+    "BUY_STOP": 4,
+    "SELL_STOP": 5,
+}
+
+
+def test_order_type_fallback_matches_official_mt5_constants():
+    """The non-Windows fallback table must equal the real MT5 constants."""
+    assert _ORDER_TYPE_FALLBACK == OFFICIAL_ORDER_TYPES
+
+
+def test_mock_mt5_order_types_match_official_constants(mock_mt5):
+    """The mock must faithfully represent the real MetaTrader5 constants."""
+    for name, value in OFFICIAL_ORDER_TYPES.items():
+        assert getattr(mock_mt5, f"ORDER_TYPE_{name}") == value, name
+
+
+def test_mock_and_production_order_types_agree(mock_mt5):
+    """Mock and production must never disagree about an order type value."""
+    for order_type in OrderType:
+        assert _order_type_value(order_type) == getattr(
+            mock_mt5, f"ORDER_TYPE_{order_type.value}"
+        ), order_type.value
+
+
+def test_order_type_int_round_trip():
+    """int -> OrderType is the exact inverse (BUY_STOP is not SELL_LIMIT)."""
+    for order_type in OrderType:
+        assert _order_type_from_int(_order_type_value(order_type)) is order_type
+
+
+def test_pending_requests_carry_official_order_type_values(mock_mt5):
+    """Each place_* helper must emit the official numeric order type."""
+    spec = _make_spec(stops_level=20)  # min distance 0.20
+    tick = _make_tick(bid=2000.0, ask=2000.3)
+    cases = [
+        (place_buy_limit, 1990.0, OFFICIAL_ORDER_TYPES["BUY_LIMIT"]),
+        (place_buy_stop, 2010.0, OFFICIAL_ORDER_TYPES["BUY_STOP"]),
+        (place_sell_limit, 2010.0, OFFICIAL_ORDER_TYPES["SELL_LIMIT"]),
+        (place_sell_stop, 1990.0, OFFICIAL_ORDER_TYPES["SELL_STOP"]),
+    ]
+    for place_fn, price, expected_type in cases:
+        mock_mt5.order_send.reset_mock()
+        result = place_fn(
+            spec, tick, volume=0.1, price=price, sl=1980.0, tp=2030.0,
+            magic=77, deviation=10, comment="regression",
+        )
+        assert result.success is True, place_fn.__name__
+        req = mock_mt5.order_send.call_args[0][0]
+        assert req["action"] == 5, place_fn.__name__  # TRADE_ACTION_PENDING
+        assert req["type"] == expected_type, place_fn.__name__
+
+
 def test_pending_invalid_distances_rejected_locally(mock_mt5):
     spec = _make_spec(stops_level=20)  # min distance 0.20
     tick = _make_tick(bid=2000.0, ask=2000.3)
@@ -633,6 +709,46 @@ def test_pending_invalid_distances_rejected_locally(mock_mt5):
     r4 = place_sell_stop(spec, tick, volume=0.1, price=1999.90, sl=2020.0, tp=1980.0, magic=77, deviation=10, comment="bad")
     assert not mock_mt5.order_send.called
     assert r4.success is False
+
+
+# ===========================================================================
+# 8c. RETCODE LABELS (regression: PLACED / DONE_PARTIAL were swapped)
+# ===========================================================================
+
+#: Official ENUM_TRADE_RETCODE values shipped by the MetaTrader5 Python
+#: package (MetaTrader5/__init__.py). Hard-coded on purpose.
+OFFICIAL_RETCODES = {"TRADE_RETCODE_PLACED": 10008, "TRADE_RETCODE_DONE": 10009,
+                     "TRADE_RETCODE_DONE_PARTIAL": 10010}
+
+
+def test_retcode_labels_match_official_mt5_constants():
+    """Local retcode labels must carry the official ENUM_TRADE_RETCODE values."""
+    assert RETCODE_PLACED == OFFICIAL_RETCODES["TRADE_RETCODE_PLACED"]
+    assert RETCODE_DONE == OFFICIAL_RETCODES["TRADE_RETCODE_DONE"]
+    assert RETCODE_DONE_PARTIAL == OFFICIAL_RETCODES["TRADE_RETCODE_DONE_PARTIAL"]
+
+
+def test_retcode_labels_agree_with_mt5_constants():
+    """Labels must equal MT5's own constants (or the documented fallback)."""
+    assert RETCODE_PLACED == const("TRADE_RETCODE_PLACED", 10008)
+    assert RETCODE_DONE == const("TRADE_RETCODE_DONE", 10009)
+    assert RETCODE_DONE_PARTIAL == const("TRADE_RETCODE_DONE_PARTIAL", 10010)
+
+
+def test_accepted_retcode_membership_unchanged(mock_mt5):
+    """Acceptance is unchanged: exactly {10008, 10009, 10010} are accepted."""
+    assert {RETCODE_PLACED, RETCODE_DONE, RETCODE_DONE_PARTIAL} == {10008, 10009, 10010}
+
+    request = {
+        "action": 1, "symbol": "XAUUSD", "volume": 0.1, "type": 0,
+        "price": 2000.8, "sl": 1990.0, "tp": 2010.0, "deviation": 10,
+        "magic": 77, "comment": "retcode",
+    }
+    for retcode in (10008, 10009, 10010, 10004, 10006, 10013, 10016, 10019):
+        mock_mt5.order_send.return_value = MockTradeSendResult(retcode, "rc", 12345)
+        result = send_request(request)
+        assert result.retcode == retcode
+        assert result.success is (retcode in (10008, 10009, 10010)), retcode
 
 
 # ===========================================================================
