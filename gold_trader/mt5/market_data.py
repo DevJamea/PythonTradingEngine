@@ -109,6 +109,29 @@ def get_candles(symbol: str, timeframe: str, count: int) -> pd.DataFrame:
     ]
 
 
+def _utc_timestamp(value: Any) -> pd.Timestamp:
+    """Normalise ``value`` to a timezone-aware UTC :class:`pandas.Timestamp`.
+
+    Pandas rejects ``pd.Timestamp(x, tz="UTC")`` when ``x`` already carries a
+    tzinfo (``ValueError: Cannot pass a datetime or Timestamp with tzinfo
+    with the tz parameter. Use tz_convert instead.``), which is exactly what
+    ``datetime.now(timezone.utc)`` / :func:`~gold_trader.utils.time_utils.utcnow`
+    produce. So:
+
+    * timezone-aware values keep their instant and are converted with
+      ``tz_convert("UTC")``;
+    * naive values are *interpreted* as UTC with ``tz_localize("UTC")``
+      (the same interpretation the old ``tz="UTC"`` call had for naive
+      input);
+    * other pandas-parsable values (ISO strings, ``pd.Timestamp``, ...) go
+      through ``pd.Timestamp`` first and then follow the rules above.
+    """
+    ts = value if isinstance(value, pd.Timestamp) else pd.Timestamp(value)
+    if ts.tzinfo is not None:
+        return ts.tz_convert("UTC")
+    return ts.tz_localize("UTC")
+
+
 def drop_unclosed_candle(
     df: pd.DataFrame, timeframe: str, now: Optional[datetime] = None
 ) -> pd.DataFrame:
@@ -117,12 +140,18 @@ def drop_unclosed_candle(
     A candle is closed when the current time has reached
     ``candle_time + timeframe``. ``now`` is injectable for deterministic
     tests.
+
+    ``now`` may be omitted (UTC now is used), naive (interpreted as UTC) or
+    timezone-aware (converted to UTC); the ``time`` column may likewise be
+    tz-aware or naive. Both are normalised to tz-aware UTC before they are
+    compared, so the closed-candle decision is unchanged.
     """
     if len(df) == 0:
         return df
     seconds = timeframe_seconds(timeframe)
-    now_ts = pd.Timestamp(now or datetime.now(timezone.utc), tz="UTC")
-    last_time = pd.Timestamp(df["time"].iloc[-1], tz="UTC")
+    current = now if now is not None else datetime.now(timezone.utc)
+    now_ts = _utc_timestamp(current)
+    last_time = _utc_timestamp(df["time"].iloc[-1])
     if now_ts < last_time + pd.Timedelta(seconds=seconds):
         return df.iloc[:-1].copy()
     return df
