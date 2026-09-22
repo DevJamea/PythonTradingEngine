@@ -50,6 +50,7 @@ def make_state(**overrides):
         open_position_count=0,
         pending_order_count=0,
         daily_pnl=0.0,
+        daily_pnl_known=True,
         account_balance=10_000.0,
         account_equity=10_000.0,
         now=datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc),
@@ -394,6 +395,7 @@ def test_market_state_permission_defaults_are_fail_safe():
     assert state.terminal_trade_allowed is False
     assert state.account_trade_allowed is False
     assert state.expert_trade_allowed is False
+    assert state.daily_pnl_known is False
 
     # Trading must be blocked when permissions default to False
     cfg = make_cfg(trading_enabled=True, dry_run=False)
@@ -422,6 +424,7 @@ def test_market_state_all_permissions_true_allows_trading():
         account_balance=10_000.0,
         account_equity=10_000.0,
         now=datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc),
+        daily_pnl_known=True,
     )
     cfg = make_cfg(trading_enabled=True, dry_run=False)
     decision = check(cfg, state, make_plan())

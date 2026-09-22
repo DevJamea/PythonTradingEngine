@@ -32,6 +32,11 @@ from gold_trader.models import (
     SymbolSpec,
     TradePlan,
 )
+from gold_trader.mt5.execution_gate import (
+    ExecutionPermission,
+    execution_permission,
+    refresh_verified_account_safety,
+)
 from gold_trader.mt5.market_data import TickData, get_tick, is_tick_usable
 from gold_trader.mt5._constants import const
 from gold_trader.mt5.orders import (
@@ -60,7 +65,7 @@ from gold_trader.trade_management.partial_close import manage_partial_close
 from gold_trader.mt5.symbols import find_gold_symbol, is_gold_symbol
 from gold_trader.trade_management.reconciliation import resolve_management_actions
 from gold_trader.trade_management.trailing_stop import manage_trailing_stop
-from tests._helpers import make_cfg
+from tests._helpers import make_cfg, publish_terminal_account
 
 
 class MockMT5Tick:
@@ -146,8 +151,17 @@ def mock_mt5():
     mock.order_send.return_value = MockTradeSendResult(10009, "Order placed", 12345)
     mock.last_error.return_value = (0, "Success")
 
-    with patch.object(mt5_conn, "MT5_AVAILABLE", True), patch.object(mt5_conn, "_mt5", mock):
-        yield mock
+    # Request-construction opt-in. Live switches are not enough: the stub
+    # must prove Demo through account_info. account_is_demo=True is not proof.
+    allow = ExecutionPermission(trading_enabled=True, dry_run=False)
+    with (
+        patch.object(mt5_conn, "MT5_AVAILABLE", True),
+        patch.object(mt5_conn, "_mt5", mock),
+    ):
+        publish_terminal_account(0)
+        assert refresh_verified_account_safety() is True
+        with execution_permission(allow):
+            yield mock
 
 
 # ===========================================================================
