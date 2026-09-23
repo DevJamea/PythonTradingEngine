@@ -135,3 +135,62 @@ def publish_terminal_account(
         return
     api.account_info.side_effect = None
     api.account_info.return_value = TerminalAccount(trade_mode)
+
+
+def make_scalp_frame(
+    side: str = "buy",
+    n_flat: int = 70,
+    n_push: int = 4,
+    step: float = 0.9,
+    wiggle: float = 0.02,
+    freq: str = "5min",
+    start: str = "2026-01-05 00:00:00",
+) -> pd.DataFrame:
+    """Deterministic mean-reversion scalp scenario for the scalping engine.
+
+    A quiet flat stretch (so Bollinger has a narrow, well-defined band), a
+    sharp excursion of ``n_push`` candles that pushes the close outside the
+    lower (BUY) or upper (SELL) band with an extreme fast RSI, then one
+    reversal candle closing back inside the band. The last row is the signal
+    candle; the design makes every gate pass with
+    ``spread=0.05, scalp_tp_atr_multiple=1.0``.
+    """
+    if side not in ("buy", "sell"):
+        raise ValueError("side must be 'buy' or 'sell'")
+    rows = []
+    price = 2000.0
+    for i in range(n_flat):
+        o = price
+        c = o + (wiggle if i % 2 == 0 else -wiggle)
+        rows.append((o, max(o, c) + wiggle, min(o, c) - wiggle, c))
+        price = c
+    direction = -1.0 if side == "buy" else 1.0
+    for _ in range(n_push):
+        o = price
+        c = o + direction * step
+        rows.append(
+            (o, max(o, c) + wiggle, min(o, c) - wiggle, c)
+        )
+        price = c
+    o = price
+    c = o - direction * step          # reversal candle back towards the mean
+    rows.append((o, max(o, c) + wiggle, min(o, c) - wiggle, c))
+    return build_df(rows, start=start, freq=freq)
+
+
+def scalp_cfg(**overrides):
+    """Config tuned for the deterministic scalp fixture (filters neutralised)."""
+    base = dict(
+        scalping_enabled=True,
+        active_strategy="scalping",
+        scalp_vol_min_percentile=0.0,
+        scalp_vol_max_percentile=1.0,
+        scalp_vol_lookback=2,
+        scalp_min_candles_for_signal=60,
+        scalp_tp_atr_multiple=1.0,
+        scalp_sl_atr_multiple=1.0,
+        scalp_spread_safety_margin=0.05,
+        min_profit_to_spread_ratio=3.0,
+    )
+    base.update(overrides)
+    return make_cfg(**base)

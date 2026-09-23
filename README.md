@@ -73,7 +73,7 @@ gold_trader/
 ├── strategy/                # candles, indicators, trend, signals, levels
 ├── risk/                    # position sizing + independent risk gate
 ├── trade_management/        # break-even, partial close, trailing, pending
-├── backtest/                # engine + metrics
+├── backtest/                # engine(s) + metrics + cost model + analysis
 └── utils/                   # logging, validators, time helpers
 tests/                       # deterministic unit tests (no MT5 needed)
 ```
@@ -193,6 +193,60 @@ position sizing. It reports total trades, wins/losses, win rate, gross
 profit/loss, net profit, max drawdown, profit factor and average win/loss.
 No future data can leak into the strategy (a unit test asserts the
 precomputation is identical to window-limited computation).
+
+## 11b. Scalping engine (opt-in, separate strategy)
+
+A second decision engine exists next to the trend baseline:
+`gold_trader/strategy/scalping.py` — short-horizon **mean reversion** on M5 with
+a *mandatory* cost gate. It is **off by default** and it never modifies
+`signals.py`:
+
+| Switch | Default | Meaning |
+|---|---|---|
+| `ACTIVE_STRATEGY` | `signals` | `scalping` selects the new engine in the live loop |
+| `SCALPING_ENABLED` | `false` | Master opt-in; both switches are required |
+| `MIN_PROFIT_TO_SPREAD_RATIO` | `3.0` | Refuse any trade whose TP is not `(spread + margin) x 3`. Below 1.0 the config is rejected outright |
+| `SCALP_MAX_SPREAD` | `0.45` | No entries while the quoted gold spread is wider |
+| `SCALPING_RISK_PER_TRADE` | `0.0015` | Separate, 3x smaller risk than the baseline |
+| `SCALP_MAX_TRADES_PER_DAY` | `6` | Daily entry cap (fail-closed when the deal history cannot be read) |
+| `SCALPING_DISABLE_MANAGEMENT` | `true` | No break-even / partial close / trailing for scalps: full close at SL or TP only |
+| `BACKTEST_USE_RECORDED_SPREAD` | `false` | Backtests use the real per-bar bid/ask spread instead of the fixed estimate |
+
+Read `SCALPING_REALITY.md` first: scalping is dominated by execution cost, not by
+the entry signal, and a target that does not clear the spread several times over
+is a mathematically guaranteed slow loss. `SCALPING_RESULTS.md` records what the
+strategy actually did on real 2021-2025 gold data.
+
+Validation protocol (development 2021-2023, one look at the isolated 2024-2025,
+three cost scenarios including a +50% spread stress):
+
+```bash
+python3 tools/run_scalping_study.py \
+    --m5 /home/user/xauusd_m5_2021_2025.csv.gz \
+    --m15 /home/user/xauusd_m15_2021_2025.csv.gz \
+    --json-out scalping_study.json
+```
+
+The offline dumps must carry a real `spread` column (ask - bid); see
+`gold_trader/backtest/data.py` (`build_m1_from_bid_ask`, `resample_candles`).
+Short env aliases `SCALP_TIMEFRAME` / `SCALP_SL_ATR_MULT` / `SCALP_TP_ATR_MULT`
+are accepted for the long names (the long name wins if both are set).
+
+To rebuild the dataset from scratch (real two-sided Dukascopy quotes, so the
+spread in the study is measured and not assumed):
+
+```bash
+python3 tools/fetch_xauusd_dukascopy.py          # M1 bid+ask -> ~/.cache/xauusd_raw
+XAU_OUT_DIR=. python3 tools/aggregate_xauusd.py  # -> xauusd_m5/m15/h1_*.csv.gz
+```
+
+**Headline result of that study (read `SCALPING_RESULTS.md`):** on real
+2021-2025 gold spreads the scalper loses money -- isolated 2024-2025: 75 trades,
+profit factor 0.64, -224 USD on a 10k account, Sharpe -1.47; 0 of 16 grid
+configurations and only 2 of 15 walk-forward folds were profitable. It is far
+*less* bad than the trend baseline (-2,931 USD over the same window) because of
+the smaller risk and the cost gate, but neither engine passes the acceptance
+rules, so `SCALPING_ENABLED` stays `false`.
 
 ## 12. Demo trading (graduated switch-over)
 

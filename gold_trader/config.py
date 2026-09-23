@@ -27,37 +27,58 @@ if load_dotenv is not None:
 # small typed env readers
 # ---------------------------------------------------------------------------
 
+#: Short aliases accepted for the scalping knobs (``SCALP_*`` reads the same as
+#: the long ``SCALPING_*`` name). The long name wins when both are set.
+ENV_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "SCALPING_TIMEFRAME": ("SCALP_TIMEFRAME",),
+    "SCALP_SL_ATR_MULTIPLE": ("SCALP_SL_ATR_MULT",),
+    "SCALP_TP_ATR_MULTIPLE": ("SCALP_TP_ATR_MULT",),
+}
+
+
+def _raw_env(key: str) -> Optional[str]:
+    """Value of ``key``, falling back to its documented short aliases."""
+    raw = os.getenv(key)
+    if raw is not None and raw.strip():
+        return raw
+    for alias in ENV_ALIASES.get(key, ()):
+        raw = os.getenv(alias)
+        if raw is not None and raw.strip():
+            return raw
+    return None
+
+
 def _env_str(key: str, default: Optional[str] = None) -> Optional[str]:
     """Read a string env var; empty values fall back to ``default``."""
-    raw = os.getenv(key)
+    raw = _raw_env(key)
     if raw is None or not raw.strip():
         return default
     return raw.strip()
 
 
 def _env_float(key: str, default: float) -> float:
-    raw = os.getenv(key)
+    raw = _raw_env(key)
     if raw is None or not raw.strip():
         return default
     return float(raw)
 
 
 def _env_int(key: str, default: int) -> int:
-    raw = os.getenv(key)
+    raw = _raw_env(key)
     if raw is None or not raw.strip():
         return default
     return int(raw)
 
 
 def _env_bool(key: str, default: bool) -> bool:
-    raw = os.getenv(key)
+    raw = _raw_env(key)
     if raw is None or not raw.strip():
         return default
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _env_tuple(key: str, default: Tuple[str, ...]) -> Tuple[str, ...]:
-    raw = os.getenv(key)
+    raw = _raw_env(key)
     if raw is None or not raw.strip():
         return default
     return tuple(item.strip() for item in raw.split(",") if item.strip())
@@ -67,7 +88,7 @@ def _env_partial_close_levels(
     key: str, default: Tuple[Tuple[float, float], ...]
 ) -> Tuple[Tuple[float, float], ...]:
     """Parse ``R:fraction`` pairs, e.g. ``1.0:0.5,2.0:0.3,3.0:1.0``."""
-    raw = os.getenv(key)
+    raw = _raw_env(key)
     if raw is None or not raw.strip():
         return default
     levels: list[tuple[float, float]] = []
@@ -139,6 +160,61 @@ class Config:
     level_pivot_window: int = 5
     min_candles_for_signal: int = 210
 
+    # -- strategy selection ----------------------------------------------------
+    #: Which decision engine the live loop uses. ``"signals"`` = the original
+    #: EMA+RSI+candle trend-following baseline (default, unchanged behaviour);
+    #: ``"scalping"`` = :mod:`gold_trader.strategy.scalping`. Both engines
+    #: coexist; nothing is switched on automatically.
+    active_strategy: str = "signals"
+
+    # -- scalping strategy (mean reversion, OPT-IN, disabled by default) ------
+    #: Master switch. False => the scalping engine is never consulted.
+    scalping_enabled: bool = False
+    #: Bar size the scalper is designed for. M5 by default: on candle-only
+    #: history (no real tick data) M1 signals are not reliably testable.
+    scalping_timeframe: str = "M5"
+    scalp_bb_period: int = 20
+    scalp_bb_std: float = 2.0
+    scalp_rsi_period: int = 7
+    scalp_rsi_oversold: float = 20.0
+    scalp_rsi_overbought: float = 80.0
+    #: A signal needs a CLOSED reversal candle back inside the band, never a
+    #: mere touch of the oversold/overbought level. Keep True (tested that way).
+    scalp_require_reversal_candle: bool = True
+    #: Minimum closed candles before the scalping engine emits a signal.
+    scalp_min_candles_for_signal: int = 60
+
+    # -- scalping cost gate (mandatory, refuses to trade when unmet) -----------
+    #: Required TP distance = (spread + safety margin) x this ratio.
+    min_profit_to_spread_ratio: float = 3.0
+    #: Extra price units added on top of the spread before the ratio applies.
+    scalp_spread_safety_margin: float = 0.05
+    #: Round-trip spread (ask - bid) assumed when the live spread is unknown.
+    #: 0.30 == 2 x ``backtest_spread_cost`` (the per-side estimate). Real
+    #: retail gold quotes are usually WORSE than this -- treat it as a floor.
+    scalp_expected_spread: float = 0.30
+    #: Refuse new scalp entries when the live spread exceeds this.
+    scalp_max_spread: float = 0.45
+
+    # -- scalping volatility gate ------------------------------------------------
+    scalp_atr_period: int = 14
+    #: ATR is ranked against its own recent distribution (causal percentile).
+    scalp_vol_lookback: int = 400
+    scalp_vol_min_percentile: float = 0.10
+    scalp_vol_max_percentile: float = 0.90
+
+    # -- scalping SL / TP ---------------------------------------------------------
+    scalp_sl_atr_multiple: float = 1.2
+    scalp_tp_atr_multiple: float = 1.0
+    #: Separate (much smaller) risk for scalping; the trend baseline keeps
+    #: ``risk_per_trade`` untouched.
+    scalping_risk_per_trade: float = 0.0015
+    #: Hard cap on scalp entries per UTC day (spread costs compound fast).
+    scalp_max_trades_per_day: int = 6
+    #: Explicit documented exception: scalp trades get NO break-even, NO
+    #: partial close and NO trailing -- full close at SL or TP only.
+    scalping_disable_management: bool = True
+
     # -- position management -------------------------------------------------
     break_even_enabled: bool = True
     break_even_r: float = 1.0
@@ -157,6 +233,18 @@ class Config:
     backtest_initial_balance: float = 10_000.0
     backtest_spread_cost: float = 0.15
     backtest_candles: int = 3000
+    #: Commission charged per lot PER SIDE (a round trip costs 2x this).
+    #: 0.0 = off (spread-only model, identical to the previous engine).
+    backtest_commission_per_lot: float = 0.0
+    #: Extra price slippage per side (0.0 = off, i.e. fills at bar extremes).
+    backtest_slippage_per_side: float = 0.0
+    #: Multiplier applied to every spread cost in a stress run (1.0 = off).
+    backtest_spread_stress_multiplier: float = 1.0
+    #: Use the recorded per-bar ``spread`` column (real bid/ask distance)
+    #: instead of the single fixed estimate. OFF by default so the original
+    #: engine's behaviour is unchanged; the scalping study turns it on because
+    #: a fixed spread is exactly the assumption a scalper must not get away with.
+    backtest_use_recorded_spread: bool = False
 
     log_level: str = "INFO"
 
@@ -209,6 +297,63 @@ class Config:
             "min_candles_for_signal": _env_int(
                 "MIN_CANDLES_FOR_SIGNAL", cfg.min_candles_for_signal
             ),
+            "active_strategy": _env_str("ACTIVE_STRATEGY", cfg.active_strategy),
+            # -- scalping (all opt-in) --
+            "scalping_enabled": _env_bool("SCALPING_ENABLED", cfg.scalping_enabled),
+            "scalping_timeframe": (
+                _env_str("SCALPING_TIMEFRAME", cfg.scalping_timeframe)
+                or cfg.scalping_timeframe
+            ).upper(),
+            "scalp_bb_period": _env_int("SCALP_BB_PERIOD", cfg.scalp_bb_period),
+            "scalp_bb_std": _env_float("SCALP_BB_STD", cfg.scalp_bb_std),
+            "scalp_rsi_period": _env_int("SCALP_RSI_PERIOD", cfg.scalp_rsi_period),
+            "scalp_rsi_oversold": _env_float(
+                "SCALP_RSI_OVERSOLD", cfg.scalp_rsi_oversold
+            ),
+            "scalp_rsi_overbought": _env_float(
+                "SCALP_RSI_OVERBOUGHT", cfg.scalp_rsi_overbought
+            ),
+            "scalp_require_reversal_candle": _env_bool(
+                "SCALP_REQUIRE_REVERSAL_CANDLE", cfg.scalp_require_reversal_candle
+            ),
+            "scalp_min_candles_for_signal": _env_int(
+                "SCALP_MIN_CANDLES_FOR_SIGNAL", cfg.scalp_min_candles_for_signal
+            ),
+            "min_profit_to_spread_ratio": _env_float(
+                "MIN_PROFIT_TO_SPREAD_RATIO", cfg.min_profit_to_spread_ratio
+            ),
+            "scalp_spread_safety_margin": _env_float(
+                "SCALP_SPREAD_SAFETY_MARGIN", cfg.scalp_spread_safety_margin
+            ),
+            "scalp_expected_spread": _env_float(
+                "SCALP_EXPECTED_SPREAD", cfg.scalp_expected_spread
+            ),
+            "scalp_max_spread": _env_float("SCALP_MAX_SPREAD", cfg.scalp_max_spread),
+            "scalp_atr_period": _env_int("SCALP_ATR_PERIOD", cfg.scalp_atr_period),
+            "scalp_vol_lookback": _env_int(
+                "SCALP_VOL_LOOKBACK", cfg.scalp_vol_lookback
+            ),
+            "scalp_vol_min_percentile": _env_float(
+                "SCALP_VOL_MIN_PERCENTILE", cfg.scalp_vol_min_percentile
+            ),
+            "scalp_vol_max_percentile": _env_float(
+                "SCALP_VOL_MAX_PERCENTILE", cfg.scalp_vol_max_percentile
+            ),
+            "scalp_sl_atr_multiple": _env_float(
+                "SCALP_SL_ATR_MULTIPLE", cfg.scalp_sl_atr_multiple
+            ),
+            "scalp_tp_atr_multiple": _env_float(
+                "SCALP_TP_ATR_MULTIPLE", cfg.scalp_tp_atr_multiple
+            ),
+            "scalping_risk_per_trade": _env_float(
+                "SCALPING_RISK_PER_TRADE", cfg.scalping_risk_per_trade
+            ),
+            "scalp_max_trades_per_day": _env_int(
+                "SCALP_MAX_TRADES_PER_DAY", cfg.scalp_max_trades_per_day
+            ),
+            "scalping_disable_management": _env_bool(
+                "SCALPING_DISABLE_MANAGEMENT", cfg.scalping_disable_management
+            ),
             "break_even_enabled": _env_bool("BREAK_EVEN_ENABLED", cfg.break_even_enabled),
             "break_even_r": _env_float("BREAK_EVEN_R", cfg.break_even_r),
             "break_even_buffer": _env_float("BREAK_EVEN_BUFFER", cfg.break_even_buffer),
@@ -230,6 +375,19 @@ class Config:
             ),
             "backtest_spread_cost": _env_float(
                 "BACKTEST_SPREAD_COST", cfg.backtest_spread_cost
+            ),
+            "backtest_commission_per_lot": _env_float(
+                "BACKTEST_COMMISSION_PER_LOT", cfg.backtest_commission_per_lot
+            ),
+            "backtest_slippage_per_side": _env_float(
+                "BACKTEST_SLIPPAGE_PER_SIDE", cfg.backtest_slippage_per_side
+            ),
+            "backtest_spread_stress_multiplier": _env_float(
+                "BACKTEST_SPREAD_STRESS_MULTIPLIER",
+                cfg.backtest_spread_stress_multiplier,
+            ),
+            "backtest_use_recorded_spread": _env_bool(
+                "BACKTEST_USE_RECORDED_SPREAD", cfg.backtest_use_recorded_spread
             ),
             "backtest_candles": _env_int("BACKTEST_CANDLES", cfg.backtest_candles),
             "log_level": _env_str("LOG_LEVEL", cfg.log_level),

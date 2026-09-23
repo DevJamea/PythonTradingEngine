@@ -23,3 +23,7 @@ logs/
 # IDE
 .idea/
 .vscode/
+
+# backtest datasets (large) - keep out of git
+data/
+*.csv.gz

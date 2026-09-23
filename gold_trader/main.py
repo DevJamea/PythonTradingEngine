@@ -63,6 +63,12 @@ from .mt5.connection import (
 )
 from .risk.position_size import calculate_position_size
 from .risk.risk_manager import check_trade
+from .risk.scalping_limits import (
+    DEAL_ENTRY_IN,
+    count_scalp_entries,
+    scalp_entry_allowed,
+)
+from .strategy import scalping as strategy_scalping
 from .strategy import signals as strategy_signals
 from .strategy.indicators import atr as atr_indicator
 from .strategy.indicators import latest_valid
@@ -74,6 +80,10 @@ from .trade_management.break_even import (
 from .trade_management.partial_close import manage_partial_close
 from .trade_management.pending_orders import plan_cleanup
 from .trade_management.reconciliation import resolve_management_actions
+from .trade_management.scalping_policy import (
+    filter_management_actions,
+    format_scalp_comment,
+)
 from .trade_management.trailing_stop import manage_trailing_stop
 from .utils.logger import get_errors_logger, get_logger, get_trades_logger, setup_logging
 from .utils.time_utils import utcnow
@@ -234,16 +244,44 @@ class TradingBot:
                     f"Could not verify Demo account status ({exc}) - blocking live trading"
                 ) from exc
 
+    # -- strategy selection ------------------------------------------------
+
+    @property
+    def _scalping_active(self) -> bool:
+        """True only when BOTH the engine switch and the master opt-in are on.
+
+        ``ACTIVE_STRATEGY=scalping`` alone is not enough: ``SCALPING_ENABLED``
+        stays False by default, so nothing in this repository starts scalping
+        until the operator says so twice.
+        """
+        return (
+            str(self.cfg.active_strategy).lower() == "scalping"
+            and bool(self.cfg.scalping_enabled)
+        )
+
+    @property
+    def _effective_timeframe(self) -> str:
+        """Timeframe the loop must read (scalping runs on its own, faster one)."""
+        if self._scalping_active:
+            return self.cfg.scalping_timeframe
+        return self.cfg.timeframe
+
+    def _min_candles(self) -> int:
+        if self._scalping_active:
+            return self.cfg.scalp_min_candles_for_signal
+        return self.cfg.min_candles_for_signal
+
     # -- data helpers ------------------------------------------------------
 
     def _load_data(self) -> Optional[pd.DataFrame]:
-        """Closed candles for the configured timeframe (None on failure)."""
+        """Closed candles for the effective timeframe (None on failure)."""
+        timeframe = self._effective_timeframe
         try:
             df = market_data.get_candles(
-                self.spec.name, self.cfg.timeframe, self.cfg.candles_count
+                self.spec.name, timeframe, self.cfg.candles_count
             )
-            df = market_data.drop_unclosed_candle(df, self.cfg.timeframe, utcnow())
-            return df if len(df) >= 2 else None
+            df = market_data.drop_unclosed_candle(df, timeframe, utcnow())
+            return df if len(df) >= self._min_candles() else None
         except MT5Error as exc:
             self.log.error("market data failed: %s", exc)
             return None
@@ -506,6 +544,7 @@ class TradingBot:
             actions += manage_trailing_stop(
                 positions, tick.bid, tick.ask, atr_value, self.cfg, self.spec
             )
+        actions = filter_management_actions(actions, positions, self.cfg)
         if actions:
             actions = resolve_management_actions(actions, positions)
             self.log.info(
@@ -526,7 +565,153 @@ class TradingBot:
             self.log.info("cycle complete: no new closed candle yet (last=%s)", last_time)
             return
         self._last_candle_time = last_time
+        if self._scalping_active:
+            self._evaluate_scalping_entry(df, state, tick, positions, pendings)
+            return
         self._evaluate_entry(df, state, tick, positions, pendings, atr_value)
+
+    def _scalp_entries_today(self) -> Optional[int]:
+        """Count today's bot scalp entries; None when history is unreadable.
+
+        Fail-closed: an unknown count must not be read as "zero trades", or
+        the daily-cost cap would open exactly when the data feed is worst.
+        """
+        mt5_api = require_mt5()
+        try:
+            day_start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            deals = mt5_api.history_deals_get(
+                int(day_start.timestamp()), int(time.time()), group=self.spec.name
+            )
+            if deals is None:
+                raise MT5Error(f"history_deals_get failed: {mt5_api.last_error()}")
+            return count_scalp_entries(
+                deals, magic=self.cfg.magic_number, entry_types=(DEAL_ENTRY_IN,)
+            )
+        except MT5Error as exc:
+            self.log.error(
+                "scalp entry count unavailable (%s) - blocking new scalp entries "
+                "for today (fail-closed daily cap)", exc,
+            )
+            return None
+
+    def _evaluate_scalping_entry(
+        self,
+        df: pd.DataFrame,
+        state: MarketState,
+        tick,
+        positions: List[PositionInfo],
+        pendings: List[PendingOrderInfo],
+    ) -> None:
+        """One scalping decision: pattern + volatility + spread + cost gate.
+
+        The cost gate is re-checked here against the REAL quoted spread (the
+        backtest could only use the recorded bar spread), so a trade that would
+        not clear the broker's cost right now is never sent.
+        """
+        self._install_execution_gate()
+        if tick is None:
+            self.log.warning("NO TRADE (scalping): no tick, cannot price the entry")
+            return
+        trades_today = self._scalp_entries_today()
+        cap = scalp_entry_allowed(trades_today, self.cfg.scalp_max_trades_per_day)
+        if not cap.allowed:
+            self.log.warning("NO TRADE (scalping): %s", cap.reason)
+            return
+        signal = strategy_scalping.generate_scalping_signal(
+            df, self.cfg, spread=tick.spread, trades_today=trades_today
+        )
+        last_time = df["time"].iloc[-1]
+        self._recent_signals.append(
+            (last_time, f"{signal.signal.value}: {signal.reason}")
+        )
+        self.log.info(
+            "SCALP SIGNAL @%s: %s - %s (spread=%.5f, trades today=%d/%d)",
+            last_time,
+            signal.signal.value,
+            signal.reason,
+            tick.spread,
+            trades_today,
+            self.cfg.scalp_max_trades_per_day,
+        )
+        if signal.signal is Signal.NO_TRADE:
+            return
+
+        is_buy = signal.signal is Signal.BUY
+        entry = tick.ask if is_buy else tick.bid
+        atr_value = float(signal.details.get("atr") or 0.0)
+        plan_sltp = strategy_scalping.build_scalping_sl_tp(
+            signal.signal,
+            entry,
+            atr_value,
+            tick.spread,
+            self.cfg,
+            min_stop_distance=self.spec.min_stop_distance(),
+        )
+        if plan_sltp is None:
+            self.log.warning(
+                "NO TRADE (scalping): plan refused by the cost/broker gate "
+                "(entry=%.5f atr=%.5f spread=%.5f required TP>=%.5f)",
+                entry,
+                atr_value,
+                tick.spread,
+                strategy_scalping.required_tp_distance(tick.spread, self.cfg),
+            )
+            return
+        sizing = calculate_position_size(
+            state.account_equity,
+            self.cfg.scalping_risk_per_trade,
+            entry,
+            plan_sltp.sl,
+            self.spec,
+        )
+        if sizing.volume is None:
+            self.log.warning("NO TRADE (scalping): sizing failed: %s", sizing.reason)
+            return
+        comment = format_scalp_comment(
+            self.cfg.position_comment_prefix,
+            plan_sltp.sl,
+            sizing.volume,
+            self.spec.digits,
+            volume_step=self.spec.volume_step,
+        )
+        plan = TradePlan(
+            symbol=self.spec.name,
+            order_type=OrderType.BUY if is_buy else OrderType.SELL,
+            entry=entry,
+            sl=plan_sltp.sl,
+            tp=plan_sltp.tp,
+            volume=sizing.volume,
+            risk_amount=sizing.risk_amount,
+            comment=comment,
+        )
+        decision = check_trade(
+            plan, state, self.cfg, self.spec, positions=positions, pendings=pendings
+        )
+        if decision.allowed:
+            result = mt5_orders.send_plan(
+                plan, self.spec, tick, self.cfg.magic_number, self.cfg.max_deviation
+            )
+            self._log_trade_executed(plan, result)
+        elif self.cfg.dry_run and decision.would_trade:
+            self.trades_log.info(
+                "DRY RUN (SCALP)\nSIGNAL: %s\nSYMBOL: %s\nENTRY: %.5f\nSL: %.5f\n"
+                "TP: %.5f\nVOLUME: %.2f\nRISK: %.2f\nSPREAD: %.5f\nWOULD EXECUTE: %s",
+                plan.order_type.value,
+                plan.symbol,
+                plan.entry,
+                plan.sl,
+                plan.tp,
+                plan.volume,
+                plan.risk_amount,
+                tick.spread,
+                plan.order_type.value,
+            )
+        else:
+            self.log.warning(
+                "TRADE BLOCKED (scalping %s): %s",
+                plan.order_type.value,
+                "; ".join(decision.reasons) or "unknown reason",
+            )
 
     def _evaluate_entry(
         self,
@@ -715,8 +900,14 @@ class TradingBot:
             self.conn.shutdown()
         return exit_code
 
-    def run_backtest(self) -> int:
-        """--backtest: fetch history from MT5 and run the backtest engine."""
+    def run_backtest(self, scalping: bool = False) -> int:
+        """--backtest: fetch history from MT5 and run the backtest engine.
+
+        ``scalping=True`` (``--backtest-scalping``) runs the scalping engine on
+        the faster ``SCALPING_TIMEFRAME`` with the *real* per-bar spread the
+        terminal has for those bars (MT5 reports it in points). Research only:
+        this path never builds a TradePlan and never reaches ``order_send``.
+        """
         from .backtest.engine import BacktestEngine
         from .backtest.metrics import format_metrics
 
@@ -727,14 +918,15 @@ class TradingBot:
                 preferred=self.cfg.symbol,
                 candidates=self.cfg.gold_symbol_candidates,
             )
+            timeframe = self.cfg.scalping_timeframe if scalping else self.cfg.timeframe
             print(
-                f"Fetching {self.cfg.backtest_candles} x {self.cfg.timeframe} "
+                f"Fetching {self.cfg.backtest_candles} x {timeframe} "
                 f"candles for {spec.name} ..."
             )
-            df = market_data.get_candles(
-                spec.name, self.cfg.timeframe, self.cfg.backtest_candles
-            )
-            df = market_data.drop_unclosed_candle(df, self.cfg.timeframe, utcnow())
+            df = market_data.get_candles(spec.name, timeframe, self.cfg.backtest_candles)
+            df = market_data.drop_unclosed_candle(df, timeframe, utcnow())
+            if scalping:
+                return self._run_scalping_backtest(df, spec)
             engine = BacktestEngine(self.cfg)
             result = engine.run(df, spec=spec)
             print(format_metrics(result.metrics, result.initial_balance))
@@ -755,6 +947,50 @@ class TradingBot:
         return exit_code
 
 
+    def _run_scalping_backtest(self, df, spec: SymbolSpec) -> int:
+        """Print the scalping backtest with its cost accounting (no orders)."""
+        from .backtest.cost_model import CostModel, fixed_round_trip_spread
+        from .backtest.data import spread_from_points
+        from .backtest.metrics import format_metrics
+        from .backtest.scalping_engine import ScalpingBacktestEngine
+
+        spread = None
+        try:
+            spread = spread_from_points(df, spec.point).to_numpy(dtype=float)
+        except ValueError:
+            spread = None
+        cost = CostModel(
+            variable_spread=spread,
+            fixed_spread=fixed_round_trip_spread(self.cfg),
+            stress_multiplier=float(self.cfg.backtest_spread_stress_multiplier),
+            slippage_per_side=float(self.cfg.backtest_slippage_per_side),
+            commission_per_lot=float(self.cfg.backtest_commission_per_lot),
+        )
+        result = ScalpingBacktestEngine(self.cfg, cost=cost).run(df, spec=spec)
+        print(format_metrics(result.metrics, result.initial_balance))
+        print(f"\n{cost.describe()}")
+        print(
+            f"Spread paid: {result.total_spread_cost:,.2f} | "
+            f"commission paid: {result.total_commission_cost:,.2f} | "
+            f"net profit: {result.metrics.net_profit:,.2f}"
+        )
+        vetoes = ", ".join(
+            f"{code}={count}"
+            for code, count in sorted(result.veto_counts.items(), key=lambda kv: -kv[1])
+        )
+        print(f"Decision vetoes: {vetoes or 'none'}")
+        if result.trades:
+            print("\nLast 10 trades:")
+            for trade in result.trades[-10:]:
+                print(
+                    f"  {trade.entry_time} {trade.side} entry={trade.entry:.5f} "
+                    f"exit={trade.exit_price:.5f} vol={trade.volume:.2f} "
+                    f"pnl={trade.pnl:.2f} ({trade.reason})"
+                )
+        print("NOTE: research output only - no order was created or sent.")
+        return 0
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="Gold auto-trading bot (MetaTrader 5, Demo account only)"
@@ -762,6 +998,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--once", action="store_true", help="run a single cycle and exit")
     parser.add_argument("--check", action="store_true", help="verify MT5 connection and symbol, then exit")
     parser.add_argument("--backtest", action="store_true", help="run a backtest on MT5 history, then exit")
+    parser.add_argument(
+        "--backtest-scalping",
+        action="store_true",
+        help="backtest the SCALPING engine on MT5 history with real per-bar "
+        "spread (research only, never sends orders)",
+    )
     args = parser.parse_args(argv)
 
     cfg = Config.from_env()
@@ -788,6 +1030,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return bot.check_connection()
     if args.backtest:
         return bot.run_backtest()
+    if args.backtest_scalping:
+        return bot.run_backtest(scalping=True)
     if args.once:
         return bot.run_once()
     bot.run_forever()
