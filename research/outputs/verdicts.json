@@ -1,0 +1,12 @@
+{
+  "gate1": {
+    "A": "REJECTED \u2014 GATE 1",
+    "B": "REJECTED \u2014 GATE 1",
+    "C": "REJECTED \u2014 GATE 1"
+  },
+  "gate2": {},
+  "gate3": {},
+  "gate4": {},
+  "gate5": {},
+  "gate6": {}
+}

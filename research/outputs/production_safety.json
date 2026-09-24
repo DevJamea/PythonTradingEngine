@@ -1,0 +1,14 @@
+{
+  "checks": {
+    "no_new_strategy_enabled": true,
+    "no_production_config_changed": true,
+    "production_demo_safety_unchanged": true,
+    "production_main_loop_unchanged": true,
+    "production_mt5_execution_unchanged": true,
+    "production_risk_manager_unchanged": true,
+    "production_strategy_unchanged": true
+  },
+  "git_status": "?? research/\n?? tests/test_research_costs.py\n?? tests/test_research_engine.py\n?? tests/test_research_gates.py\n?? tests/test_research_leakage.py\n?? tests/test_research_registry.py\n?? tests/test_research_splits.py\n?? tests/test_research_stats.py\n?? tests/test_research_strategies.py",
+  "modified_production_files": [],
+  "verdict": "PASS \u2014 production untouched"
+}

@@ -1,0 +1,32 @@
+{
+  "N_TRIALS_FOR_DSR": 12,
+  "TOTAL_CONFIGURATIONS": 12,
+  "TOTAL_EXPERIMENTS": 12,
+  "TOTAL_OOS_STRATEGIES": 0,
+  "TOTAL_STRATEGIES": 4,
+  "adaptive_decisions": 0,
+  "discarded_experiments": [
+    "A:primary REJECTED \u2014 GATE 1 (PF 0.307 < 1.2; trades 24 < 50; expectancy -0.5330R <= 0)",
+    "B:primary REJECTED \u2014 GATE 1 (PF 0.646 < 1.2; expectancy -0.2812R <= 0)",
+    "C:primary REJECTED \u2014 GATE 1 (PF 0.563 < 1.2; expectancy -0.3578R <= 0)"
+  ],
+  "gate1_configs": 12,
+  "heatmap_configs": 0,
+  "oos_strategies": [],
+  "sensitivity_configs": 0,
+  "strategies_tested": [
+    "baseline:reference",
+    "A:primary",
+    "B:primary",
+    "C:primary",
+    "A:diagnostic:RR1.5",
+    "A:diagnostic:RR2.5",
+    "A:diagnostic:entry-exit-only",
+    "A:diagnostic:retest-entry",
+    "B:diagnostic:RR1.5",
+    "B:diagnostic:RR2.5",
+    "B:diagnostic:trailing-exit",
+    "B:diagnostic:london-ny-session"
+  ],
+  "wf_decisions": 0
+}

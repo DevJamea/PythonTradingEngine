@@ -1,0 +1,43 @@
+{
+  "audit": {
+    "bid_ask_available": false,
+    "broker_data_source": "NONE \u2014 synthetic proxy (no broker data available)",
+    "cleaning_applied": [],
+    "dataset_hash": "3cae208d6b9fabe63015b98202ed4025dad61c64cce85cbd372f881891ef4045",
+    "date_range": {
+      "end": "2024-12-31 23:45:00+00:00",
+      "start": "2022-01-03 00:00:00+00:00"
+    },
+    "duplicate_timestamps": 0,
+    "max_gap": "2 days 00:15:00",
+    "missing_grid_slots": 0,
+    "n_candles": 75072,
+    "non_positive_price_bars": 0,
+    "ohlc_inconsistent_bars": 0,
+    "spread_provenance": "synthetic",
+    "spread_summary": {
+      "max": 3.0,
+      "mean": 0.38679334505541346,
+      "median": 0.35,
+      "p95": 0.7
+    },
+    "symbols": [
+      "XAUUSD"
+    ],
+    "timeframe": "M15",
+    "timezone": "UTC",
+    "weekend_bars": 0,
+    "weekend_handling": "excluded (no Sat/Sun bars expected)"
+  },
+  "manifest": {
+    "dataset_hash": "3cae208d6b9fabe63015b98202ed4025dad61c64cce85cbd372f881891ef4045",
+    "end": "2024-12-31 23:45:00+00:00",
+    "n_bars": 75072,
+    "path": null,
+    "source": "SYNTHETIC_PROXY_v1",
+    "spread_provenance": "synthetic",
+    "start": "2022-01-03 00:00:00+00:00",
+    "symbol": "XAUUSD",
+    "timeframe": "M15"
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "checks": [
+    {
+      "claim": "no future candle enters a signal",
+      "id": "L1",
+      "mechanism": "causal indicators (EMA/ATR/ADX/Donchian-shifted/SMA); signals evaluated per closed bar i using rows 0..i; entry at open of bar >= i+1",
+      "status": "PASS (by construction + unit test)",
+      "test": "tests/test_research_leakage.py::TestCausalIndicators"
+    },
+    {
+      "claim": "no future spread enters an earlier trade",
+      "id": "L2",
+      "mechanism": "per-bar spread array indexed by the trade's own entry/exit bars only; stress multipliers applied bar-wise",
+      "status": "PASS (by construction + unit test)",
+      "test": "tests/test_research_costs.py"
+    },
+    {
+      "claim": "no future ATR enters an earlier signal",
+      "id": "L3",
+      "mechanism": "Wilder ATR is causal; trailing uses entry-bar ATR fixed per trade",
+      "status": "PASS (by construction + unit test)",
+      "test": "tests/test_research_leakage.py"
+    },
+    {
+      "claim": "no future EMA values are used",
+      "id": "L4",
+      "mechanism": "pandas ewm causal; HTF EMA mapped via merge_asof on fully-closed HTF bar ends only",
+      "status": "PASS (by construction + unit test)",
+      "test": "tests/test_research_leakage.py::TestHTFMapping"
+    },
+    {
+      "claim": "no OOS data enters parameter selection",
+      "id": "L5",
+      "mechanism": "parameters frozen in research/config.py before execution; freeze receipt hashes config before OOS slice is built",
+      "status": "PASS (by construction + receipt)",
+      "test": "holdout lock (splits.assert_holdout_unlocked) + freeze_receipt.json"
+    },
+    {
+      "claim": "no OOS data enters sensitivity",
+      "id": "L6",
+      "mechanism": "sensitivity runner receives the Development slice only",
+      "status": "PASS (verified from registry)",
+      "test": "registry data_range audit (all sensitivity rows segment=development)",
+      "verification": {
+        "non_development_rows": [],
+        "pass": true,
+        "sensitivity_rows": 0
+      }
+    },
+    {
+      "claim": "no OOS data enters strategy construction",
+      "id": "L7",
+      "mechanism": "strategies implemented from the brief before any backtest; no post-hoc rules",
+      "status": "PASS (single code version; see environment.json)",
+      "test": "registry: no strategy code/version change across stages"
+    },
+    {
+      "claim": "no future information enters trade management",
+      "id": "L8",
+      "mechanism": "BE/partial/trail triggers evaluated bar-by-bar on the exit-side Bid/Ask of the current bar only",
+      "status": "PASS (by construction + unit test)",
+      "test": "tests/test_research_engine.py"
+    }
+  ],
+  "registry_verification": {
+    "non_development_rows": [],
+    "pass": true,
+    "sensitivity_rows": 0
+  }
+}
